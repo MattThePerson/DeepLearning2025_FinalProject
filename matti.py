@@ -4,6 +4,7 @@ Code for training and fine-tuning. By Matt Stirling.
 import os
 import pandas as pd
 from PIL import Image
+import numpy as  np
 
 import torch
 import torch.nn as nn
@@ -13,7 +14,7 @@ from torchvision import transforms, models
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, cohen_kappa_score
 
 # ========================
-# Dataset preparation
+# RetinaMultiLabelDataset
 # ========================
 class RetinaMultiLabelDataset(Dataset):
     def __init__(self, csv_file, image_dir, transform=None):
@@ -35,8 +36,21 @@ class RetinaMultiLabelDataset(Dataset):
 
 
 # ========================
-# data loaders
+# region HELPERS
 # ========================
+
+def build_model(backbone="resnet18", num_classes=3, pretrained=True):
+    if backbone == "resnet18":
+        model = models.resnet18(weights="IMAGENET1K_V1")
+        model.fc = nn.Linear(model.fc.in_features, num_classes)
+    elif backbone == "efficientnet":
+        model = models.efficientnet_b0(weights="IMAGENET1K_V1")
+        layer_fc: nn.Linear = model.classifier[1] # type: ignore[assignment]
+        model.classifier[1] = nn.Linear(layer_fc.in_features, num_classes)
+    else:
+        raise ValueError(f"Unsupported backbone: {backbone}")
+    return model
+
 
 def get_dataloaders(img_size=256, batch_size=32):
     
@@ -59,55 +73,79 @@ def get_dataloaders(img_size=256, batch_size=32):
     return train_loader, val_loader, test_loader
 
 
-# ========================
-# build model
-# ========================
-def build_model(backbone="resnet18", num_classes=3, pretrained=True):
-
-    if backbone == "resnet18":
-        model = models.resnet18(pretrained=pretrained)
-        model.fc = nn.Linear(model.fc.in_features, num_classes)
-    elif backbone == "efficientnet":
-        model = models.efficientnet_b0(pretrained=pretrained)
-        layer_fc: nn.Linear = model.classifier[1] # type: ignore[assignment]
-        model.classifier[1] = nn.Linear(layer_fc.in_features, num_classes)
-    else:
-        raise ValueError("Unsupported backbone")
+def freeze_non_linear_layers(model):
+    for p in model.parameters():
+        p.requires_grad = False
+    # Unfreeze only Linear layers
+    for m in model.modules():
+        if isinstance(m, nn.Linear):
+            for p in m.parameters():
+                p.requires_grad = True
     return model
 
 
 # ========================
-# model training and val
+# region test
 # ========================
-def train_one_backbone(backbone, train_csv, val_csv, test_csv, train_image_dir, val_image_dir, test_image_dir, 
-                       epochs=10, batch_size=32, lr=1e-4, img_size=256, save_dir="checkpoints", pretrained_backbone=None):
+def test(model, test_loader, device=torch.device("cpu"), save_dir="checkpoints", name="noname"):
+
+    ckpt_path = os.path.join(save_dir, f"best_{name}.pt")
+    if not os.path.exists(ckpt_path):
+        raise FileNotFoundError(f"No such checkpoint: {ckpt_path}")
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print('loading checkpoint:', ckpt_path)
+    model.load_state_dict(torch.load(ckpt_path, map_location=device))
 
-    train_loader, val_loader, test_loader = get_dataloaders(img_size, batch_size)
+    # evaluate
+    model.eval()
+    y_true, y_pred = [], []
+    with torch.no_grad():
+        for imgs, labels in test_loader:
+            imgs = imgs.to(device)
+            outputs = model(imgs)
+            probs = torch.sigmoid(outputs).cpu().numpy()
+            preds = (probs > 0.5).astype(int)
+            y_true.extend(labels.numpy())
+            y_pred.extend(preds)
 
-    # model
-    model = build_model(backbone, num_classes=3, pretrained=False).to(device)
+    y_true = np.array(y_true) #torch.tensor(y_true).numpy()
+    y_pred = np.array(y_pred) #torch.tensor(y_pred).numpy()
 
-    for p in model.parameters():
-        p.requires_grad = True
+    # results to DataFrame
+    disease_names = ["DR", "Glaucoma", "AMD"]
+    results_data = []
     
-    # loss & optimizer
-    criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
+    for i, disease in enumerate(disease_names):  # compute metrics for every disease
+        y_t = y_true[:, i]
+        y_p = y_pred[:, i]
+
+        acc =       accuracy_score(y_t, y_p)
+        precision = precision_score(y_t, y_p, average="macro", zero_division=0)
+        recall =    recall_score(y_t, y_p, average="macro", zero_division=0)
+        f1 =        f1_score(y_t, y_p, average="macro", zero_division=0)
+        kappa =     cohen_kappa_score(y_t, y_p)
+
+        results_data.append([disease, acc, precision, recall, f1, kappa])
+
+    results = pd.DataFrame(data=results_data, columns=["Disease", "Accuracy", "Precision", "Recall", "F1-score", "Kappa"])
+    print(results)
+    
+    return results
+
+
+# ========================
+# region train
+# ========================
+def train(model, epochs, train_loader, val_loader, optimizer, criterion, device=torch.device("cpu"), save_dir='checkpoints', name="noname"):
 
     # training
     best_val_loss = float("inf")
     os.makedirs(save_dir, exist_ok=True)
-    ckpt_path = os.path.join(save_dir, f"best_{backbone}.pt")
-
-    # load pretrained backbone
-    if pretrained_backbone is not None:
-        state_dict = torch.load(pretrained_backbone, map_location="cpu")
-        model.load_state_dict(state_dict)
+    ckpt_path = os.path.join(save_dir, f"best_{name}.pt")
     
-
+    # run epochs
     for epoch in range(epochs):
+        print('training ...')
         model.train()
         train_loss = 0
         for imgs, labels in train_loader:
@@ -118,10 +156,10 @@ def train_one_backbone(backbone, train_csv, val_csv, test_csv, train_image_dir, 
             loss.backward()
             optimizer.step()
             train_loss += loss.item() * imgs.size(0)
-
         train_loss /= len(train_loader.dataset) # type: ignore
 
         # validation
+        print('evaluating ...')
         model.eval()
         val_loss = 0
         with torch.no_grad():
@@ -132,65 +170,75 @@ def train_one_backbone(backbone, train_csv, val_csv, test_csv, train_image_dir, 
                 val_loss += loss.item() * imgs.size(0)
         val_loss /= len(val_loader.dataset) # type: ignore
 
-        print(f"[{backbone}] Epoch {epoch+1}/{epochs} Train Loss: {train_loss:.4f} Val Loss: {val_loss:.4f}")
+        print(f"epoch {epoch+1}/{epochs} Train Loss: {train_loss:.4f} Val Loss: {val_loss:.4f}")
 
         # save best
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             torch.save(model.state_dict(), ckpt_path)
-            print(f"Saved best model for {backbone} at {ckpt_path}")
-
-    # ========================
-    # testing
-    # ========================
-    model.load_state_dict(torch.load(ckpt_path, map_location=device))
-    model.eval()
-    y_true, y_pred = [], []
-
-    with torch.no_grad():
-        for imgs, labels in test_loader:
-            imgs = imgs.to(device)
-            outputs = model(imgs)
-            probs = torch.sigmoid(outputs).cpu().numpy()
-            preds = (probs > 0.5).astype(int)
-            y_true.extend(labels.numpy())
-            y_pred.extend(preds)
-
-    y_true = torch.tensor(y_true).numpy()
-    y_pred = torch.tensor(y_pred).numpy()
-
-    disease_names = ["DR", "Glaucoma", "AMD"]
-
-    for i, disease in enumerate(disease_names):  #compute metrics for every disease
-        y_t = y_true[:, i]
-        y_p = y_pred[:, i]
-
-        acc = accuracy_score(y_t, y_p)
-        precision = precision_score(y_t, y_p, average="macro",zero_division=0)
-        recall = recall_score(y_t, y_p, average="macro",zero_division=0)
-        f1 = f1_score(y_t, y_p, average="macro",zero_division=0)
-        kappa = cohen_kappa_score(y_t, y_p)
-
-        print(f"{disease} Results [{backbone}]")
-        print(f"Accuracy : {acc:.4f}")
-        print(f"Precision: {precision:.4f}")
-        print(f"Recall   : {recall:.4f}")
-        print(f"F1-score : {f1:.4f}")
-        print(f"Kappa    : {kappa:.4f}")
+            print(f"    ...saved best model {ckpt_path}")
 
 
+
+# ========================
+# region MAIN
+# ========================
+def main(backbone, train_csv, val_csv, test_csv, train_image_dir, val_image_dir, test_image_dir, 
+                       epochs=10, batch_size=32, lr=1e-4, img_size=256, save_dir="checkpoints", pretrained_backbone=None,
+                       no_train=False):
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print('using device:', device)
+
+    # data loaders
+    print('creating data loaders')
+    train_loader, val_loader, test_loader = get_dataloaders(img_size, batch_size)
+
+    # model
+    print('building model with backbone')
+    model = build_model(backbone, num_classes=3, pretrained=False).to(device)
+
+    for p in model.parameters():
+        p.requires_grad = True
+    
+    # loss & optimizer
+    criterion = nn.BCEWithLogitsLoss()
+    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
+
+    # load pretrained backbone
+    if pretrained_backbone is not None:
+        print('loading pretrained backbone:', pretrained_backbone)
+        state_dict = torch.load(pretrained_backbone, map_location="cpu")
+        model.load_state_dict(state_dict)
+    
+    # TRAIN
+    if not no_train:
+        print(f'Training {backbone} for {epochs} epochs')
+        train(model, epochs, train_loader, val_loader, optimizer, criterion, device,
+            save_dir=save_dir, name=backbone)
+    
+    # TEST
+    print(f'Testing ...')
+    test(model, test_loader, device,
+         save_dir=save_dir, name=backbone)
+    
+    
     
 # ========================
-# main
+# region CLI
 # ========================
 if __name__ == "__main__":
 
     # args ------------------
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--backbone', help='Backbone for fine-tuned model', choices=["resnet18", "efficientnet"])
+    parser.add_argument('--backbone', default="resnet18", help='Backbone for fine-tuned model', choices=["resnet18", "efficientnet"])
     parser.add_argument('--from-scratch', action='store_true', help="Don't use pretrained backbone")
     parser.add_argument('--full-fine-tuning', action='store_true', help="Train whole network. Else: Train only classifier (freeze backbone)")
+
+    parser.add_argument('--epochs', type=int, default=20)
+    parser.add_argument('--no-train', action='store_true', help="Skip model training")
+    
     args = parser.parse_args()
     
     # paths -----------------
@@ -214,5 +262,12 @@ if __name__ == "__main__":
         pretrained_backbone = pretrained_backbones[args.backbone]
     
     # run -------------------
-    train_one_backbone(args.backbone, train_csv, val_csv, test_csv, train_image_dir, val_image_dir, test_image_dir,
-                           epochs=20, batch_size=32, lr=1e-5, img_size=256, pretrained_backbone=pretrained_backbone)
+    main(args.backbone, train_csv, val_csv, test_csv, train_image_dir, val_image_dir, test_image_dir,
+                        epochs=args.epochs,
+                        no_train=args.no_train,
+                        
+                        lr=1e-5,
+                        batch_size=32,
+                        img_size=256,
+                        pretrained_backbone=pretrained_backbone,
+    )
