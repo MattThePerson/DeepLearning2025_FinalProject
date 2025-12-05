@@ -38,3 +38,6 @@ pillow
 Use `-h` to see list of all options (`python matti.py -h`). 
 
 
+## Use of AI
+
+- Help with freezing only backbone of model. 

@@ -40,8 +40,9 @@ class RetinaMultiLabelDataset(Dataset):
 # ========================
 
 def build_model(backbone="resnet18", num_classes=3, pretrained=True):
+
     if backbone == "resnet18":
-        model = models.resnet18(weights="IMAGENET1K_V1")
+        model = models.resnet18(weights="IMAGENET1K_V1") # TODO: should this be None??
         model.fc = nn.Linear(model.fc.in_features, num_classes)
     elif backbone == "efficientnet":
         model = models.efficientnet_b0(weights="IMAGENET1K_V1")
@@ -49,6 +50,10 @@ def build_model(backbone="resnet18", num_classes=3, pretrained=True):
         model.classifier[1] = nn.Linear(layer_fc.in_features, num_classes)
     else:
         raise ValueError(f"Unsupported backbone: {backbone}")
+    
+    for p in model.parameters():
+        p.requires_grad = True
+    
     return model
 
 
@@ -74,6 +79,9 @@ def get_dataloaders(img_size=256, batch_size=32):
 
 
 def freeze_non_linear_layers(model):
+    """
+    AKA: Freeze backbone and leave classifier (linear layers) unfrozen. 
+    """
     for p in model.parameters():
         p.requires_grad = False
     # Unfreeze only Linear layers
@@ -83,6 +91,31 @@ def freeze_non_linear_layers(model):
                 p.requires_grad = True
     return model
 
+
+# ========================
+# region CUSTOM LOSS
+# ========================
+
+def FocalLoss(x):
+    """
+    Focal Loss: A loss function designed to address class imbalance by downweighting easy examples and focusing
+    training on hard, misclassified ones.
+    """
+    raise NotImplementedError()
+
+def ClassBalancedLoss(x):
+    """
+    Class-Balanced Loss: Re-weight the BCE loss according to class frequency. This is a common method for handling
+    class imbalance.
+    """
+    raise NotImplementedError()
+
+
+# ========================
+# region predict
+# ========================
+def predict(model, ):
+    ...
 
 # ========================
 # region test
@@ -184,8 +217,10 @@ def train(model, epochs, train_loader, val_loader, optimizer, criterion, device=
 # region MAIN
 # ========================
 def main(backbone, train_csv, val_csv, test_csv, train_image_dir, val_image_dir, test_image_dir, 
-                       epochs=10, batch_size=32, lr=1e-4, img_size=256, save_dir="checkpoints", pretrained_backbone=None,
-                       no_train=False):
+            loss_fn,
+            mode="train", run_name="noname",
+            epochs=10, batch_size=32, lr=1e-4, img_size=256, save_dir="checkpoints", pretrained_backbone=None,
+    ):
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print('using device:', device)
@@ -198,11 +233,8 @@ def main(backbone, train_csv, val_csv, test_csv, train_image_dir, val_image_dir,
     print('building model with backbone')
     model = build_model(backbone, num_classes=3, pretrained=False).to(device)
 
-    for p in model.parameters():
-        p.requires_grad = True
-    
     # loss & optimizer
-    criterion = nn.BCEWithLogitsLoss()
+    # criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
 
     # load pretrained backbone
@@ -212,9 +244,9 @@ def main(backbone, train_csv, val_csv, test_csv, train_image_dir, val_image_dir,
         model.load_state_dict(state_dict)
     
     # TRAIN
-    if not no_train:
+    if mode == "train":
         print(f'Training {backbone} for {epochs} epochs')
-        train(model, epochs, train_loader, val_loader, optimizer, criterion, device,
+        train(model, epochs, train_loader, val_loader, optimizer, loss_fn, device,
             save_dir=save_dir, name=backbone)
     
     # TEST
@@ -222,24 +254,49 @@ def main(backbone, train_csv, val_csv, test_csv, train_image_dir, val_image_dir,
     test(model, test_loader, device,
          save_dir=save_dir, name=backbone)
     
-    
-    
+    # PREDICT (csv)
+
+
+
 # ========================
 # region CLI
 # ========================
+
+LOSS_FUNCS = {
+    "bce": nn.BCEWithLogitsLoss,
+    # "focal": FocalLoss,
+    # "class_balanced": ClassBalancedLoss,
+}
+
 if __name__ == "__main__":
 
     # args ------------------
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--backbone', default="resnet18", help='Backbone for fine-tuned model', choices=["resnet18", "efficientnet"])
-    parser.add_argument('--from-scratch', action='store_true', help="Don't use pretrained backbone")
-    parser.add_argument('--full-fine-tuning', action='store_true', help="Train whole network. Else: Train only classifier (freeze backbone)")
 
+    parser.add_argument('--backbone', default="resnet18", help='Backbone for fine-tuned model', choices=["resnet18", "efficientnet"])
+    parser.add_argument('--scratch', action='store_true', help="Do not load pretrained params")
+    parser.add_argument('--full-ft', action='store_true', help="Train whole network. Else: Train only classifier (backbone forzen)")
+
+    # 
+    parser.add_argument('--mode', default='train', choices=["train", "test", "predict"], help="")
+    parser.add_argument('--run-name', help="")
+
+    # train args
+    parser.add_argument('--loss_fn', default="bce", choices=["bce", "focal", "class_balanced"], 
+                        help="Loss function to use during training")
+    parser.add_argument('--attention', choices=["SE", "MHA"], 
+                        help="Attention mechanism to use (Squeeze-and-Excitation or Multi-head Attention)")
+    
     parser.add_argument('--epochs', type=int, default=20)
-    parser.add_argument('--no-train', action='store_true', help="Skip model training")
+    parser.add_argument('--lr', type=float, default=1e-5)
+    parser.add_argument('--batch-size', type=int, default=32)
     
     args = parser.parse_args()
+    
+    if args.scratch:
+        print('training from scratch, enabling full fine tuning')
+        args.full_ft = True
     
     # paths -----------------
     DATASET_PATH = "./ODIR_dataset"
@@ -263,11 +320,14 @@ if __name__ == "__main__":
     
     # run -------------------
     main(args.backbone, train_csv, val_csv, test_csv, train_image_dir, val_image_dir, test_image_dir,
-                        epochs=args.epochs,
-                        no_train=args.no_train,
-                        
-                        lr=1e-5,
-                        batch_size=32,
-                        img_size=256,
-                        pretrained_backbone=pretrained_backbone,
+            epochs=args.epochs,
+            mode=args.mode,
+            
+            lr=args.lr, # default: 1e-5
+            batch_size=args.batch_size, # default: 32
+            pretrained_backbone=pretrained_backbone,
+
+            loss_fn=LOSS_FUNCS[args.loss_fn],
+
+            img_size=256,
     )
