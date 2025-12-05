@@ -2,11 +2,12 @@
 
 ## TODO
 
-- 
+- one good train
 
-## HUOM
+## QUESTIONS
 
 - should you load weights into the models?
+- onsite test data loader?
 
 ## Options
 
@@ -42,3 +43,11 @@ OPTIONS:
 - train
 - test (offsite test set)
 - predict (onsite test set, produce csv)
+
+
+## MODEL LOADING
+
+Options:
+- backbone          `resnet | efficientnet`
+- pretrained params `scratch | pretrained_backbone | finetuned`
+- param unfreezing  `classifier_only | all`
