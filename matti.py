@@ -15,6 +15,7 @@ from torchvision import transforms, models
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, cohen_kappa_score
 
 from tqdm import tqdm
+import csv
 
 # ========================
 # region Data Sets/Loaders
@@ -47,11 +48,12 @@ class RetinaMultiLabelDataset_WithoutLabels(Dataset):
         return len(self.images)
 
     def __getitem__(self, idx):
-        img_path = os.path.join(self.image_dir, self.images[idx])
+        img_name = self.images[idx]
+        img_path = os.path.join(self.image_dir, img_name)
         img = Image.open(img_path).convert("RGB")
         if self.transform:
             img = self.transform(img)
-        return img
+        return img, img_name
 
 
 def get_dataloaders(dataset_path: str, img_size=256, batch_size=32):
@@ -82,7 +84,7 @@ def get_dataloaders(dataset_path: str, img_size=256, batch_size=32):
     train_loader =        DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=4)
     val_loader   =        DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=4)
     test_loader  =        DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=4)
-    onsite_test_loader  = DataLoader(onsite_test_ds, batch_size=batch_size, shuffle=False, num_workers=4)
+    onsite_test_loader  = DataLoader(onsite_test_ds, batch_size=1, shuffle=False, num_workers=4)
     
     return train_loader, val_loader, test_loader, onsite_test_loader
 
@@ -194,9 +196,33 @@ def ClassBalancedLoss(x):
 # region predict
 # ========================
 def predict(
-        model,
+        model: nn.Module,
+        loader: DataLoader,
+        csv_path="onsite_test_submission.csv",
     ):
-    ...
+    
+    model.eval()
+    data = []
+    print(f'generating predictions for {len(loader.dataset)} images') # type: ignore
+    with torch.no_grad():
+        for img, img_name in tqdm(loader):
+            img_name = img_name[0]
+            img = img.to(DEVICE)
+            output = model(img)[0]
+            probs = torch.sigmoid(output).cpu().numpy()
+            preds = (probs > 0.5).astype(int)
+            data_line = [img_name]
+            data_line.extend(preds)
+            data.append(data_line)
+    
+    # write to csv
+    if not csv_path.endswith(".csv"): csv_path += ".csv"
+    ensure_parent_exists(csv_path)
+    print(f'writing predictions to {csv_path}')
+    with open(csv_path, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["id","D","G","A"])
+        writer.writerows(data)
 
 # ========================
 # region test
@@ -314,6 +340,7 @@ def main(
         loss_fn=nn.BCEWithLogitsLoss,
         attention=None,
         save_dir="checkpoints",
+        predict_csv="onsite_test_submission.csv",
         epochs=10, batch_size=32, lr=1e-4, img_size=256,
     ):
     
@@ -358,7 +385,9 @@ def main(
         case "predict": # - predict ---
             print("Predicting ...")
             predict(
-                model
+                model,
+                onsite_test_loader,
+                csv_path=predict_csv,
             )
         
         case "none": # - none ---------
@@ -393,7 +422,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     # general
-    parser.add_argument('--mode', default='train', choices=["train", "test", "predict", "none"], help="")
+    parser.add_argument("mode", nargs="?", default="train", choices=["train", "test", "predict", "none"])
     parser.add_argument('--dataset_path', default="./ODIR_dataset", help='Path to dataset root')
     parser.add_argument('--save_name', help="Name to give checkpoint file")
 
@@ -414,6 +443,8 @@ if __name__ == "__main__":
     parser.add_argument('--epochs', type=int, default=20)
     parser.add_argument('--lr', type=float, default=1e-5)
     parser.add_argument('--batch_size', type=int, default=32)
+
+    parser.add_argument('--predict_csv', default="onsite_test_submission", help="name of csv for predictions (can include folders)")
     
     args = parser.parse_args()
     
@@ -457,6 +488,7 @@ if __name__ == "__main__":
         save_name = save_name,
         freeze_backbone = (args.ft_mode == "classifier"),
         loss_fn = LOSS_FUNCS[args.loss_fn],
+        predict_csv=args.predict_csv,
         epochs = args.epochs,
         lr = args.lr, # default: 1e-5
         batch_size = args.batch_size, # default: 32
