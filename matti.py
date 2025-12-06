@@ -81,10 +81,14 @@ def get_dataloaders(dataset_path: str, img_size=256, batch_size=32):
     test_ds  =       RetinaMultiLabelDataset(test_csv, test_image_dir, transform)
     onsite_test_ds = RetinaMultiLabelDataset_WithoutLabels(onsite_test_image_dir, transform)
 
-    train_loader =        DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=4)
-    val_loader   =        DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=4)
-    test_loader  =        DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=4)
-    onsite_test_loader  = DataLoader(onsite_test_ds, batch_size=1, shuffle=False, num_workers=4)
+    num_workers = 4
+    import platform
+    if platform.system() == "Windows": num_workers = 0 # Stupid shit fucking windows
+
+    train_loader =        DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+    val_loader   =        DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    test_loader  =        DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    onsite_test_loader  = DataLoader(onsite_test_ds, batch_size=1, shuffle=False, num_workers=num_workers)
     
     return train_loader, val_loader, test_loader, onsite_test_loader
 
@@ -126,12 +130,16 @@ def get_model(backbone="resnet18", pretrained_params=None, freeze_backbone=False
     
     # pretrained params
     if pretrained_params is not None:
+        print('loading params:', pretrained_params)
         state_dict = torch.load(pretrained_params, map_location="cpu")
         try:
             model.load_state_dict(state_dict)
         except:
-            print(f"ERROR: Incompatible backbone ({backbone}) and params file ({pretrained_params})\nexiting ...")
+            print(f"ERROR: Incompatible backbone ({backbone}) and params file ({pretrained_params})\n ...exiting")
             sys.exit(2)
+        
+    else:
+        print('\033[33mImportant:\033[0m Not loading any params, training model from SCRATCH')
     
     # print param amounts
     all_params, trainable_params = get_parameter_count(model)
@@ -172,6 +180,19 @@ def get_parameter_count(model):
 
 def ensure_parent_exists(file: str):
     os.makedirs(os.path.dirname(file), exist_ok=True)
+
+def display_loss(train_loss, prev_train_loss, val_loss, prev_val_loss):
+    ANSI_reset = "\033[0m"
+    ANSI_red = "\033[31m"
+    ANSI_green = "\033[32m"
+    train_diff = train_loss - prev_train_loss
+    val_diff = val_loss - prev_val_loss
+    train_diff_col = ANSI_green if (train_diff <= 0) else ANSI_red
+    val_diff_col =   ANSI_green if (val_diff <= 0) else ANSI_red
+    train_msg = f"train loss: {train_loss:.4f} ({train_diff_col}{train_diff:+.4f}{ANSI_reset})"
+    val_msg =     f"val loss: {val_loss:.4f} ({val_diff_col}{val_diff:+.4f}{ANSI_reset})"
+    print(f"  {train_msg:<35}   {val_msg}")
+    
 
 # ========================
 # region CUSTOM LOSS
@@ -299,13 +320,13 @@ def train(
     ensure_parent_exists(save_name)
     print('loss function:', loss_fn)
     
-    # iterates
+    # iterate
     best_val_loss = float("inf")
+    prev_train_loss, prev_val_loss = float("inf"), float("inf")
     for epoch in range(epochs):
-        # print('training ...')
         model.train()
         train_loss = 0
-        for imgs, labels in tqdm(train_loader, desc=f"epoch {epoch+1}/{epochs}", colour="purple"):
+        for imgs, labels in tqdm(train_loader, desc=f"EPOCH {epoch+1}/{epochs}", colour="cyan"):
             imgs, labels = imgs.to(DEVICE), labels.to(DEVICE)
             optimizer.zero_grad()
             outputs = model(imgs)
@@ -316,7 +337,6 @@ def train(
         train_loss /= len(train_loader.dataset) # type: ignore
 
         # validation
-        # print('evaluating ...')
         model.eval()
         val_loss = 0
         with torch.no_grad():
@@ -327,7 +347,8 @@ def train(
                 val_loss += loss.item() * imgs.size(0)
         val_loss /= len(val_loader.dataset) # type: ignore
 
-        print(f"Train Loss: {train_loss:.4f} Val Loss: {val_loss:.4f}")
+        display_loss(train_loss, prev_train_loss, val_loss, prev_val_loss)
+        prev_train_loss, prev_val_loss = train_loss, val_loss
 
         # save best
         if val_loss < best_val_loss:
@@ -346,12 +367,11 @@ def main(
         backbone = "resnet18",
         dataset_path = "dataset",
         pretrained_params: str|None = None,
-        save_name: str|None = None,
+        save_name = "checkpoints/best.pt",
         freeze_backbone = True, # freeze non-linear layers
         loss_fn = nn.BCEWithLogitsLoss,
         attention = None,
         predict_csv = "onsite_test_submission.csv",
-        # save_dir="checkpoints",
         epochs=10, batch_size=32, lr=1e-4, img_size=256,
     ):
     
@@ -363,10 +383,7 @@ def main(
         pretrained_params = pretrained_params,
         freeze_backbone = freeze_backbone,
     ).to(DEVICE)
-
     
-    save_name = "checkpoints/test.pt"
-
     # MODE
     match mode:
         case "train": # - train -------
@@ -435,11 +452,11 @@ if __name__ == "__main__":
     # general
     parser.add_argument("mode", nargs="?", default="train", choices=["train", "test", "predict", "none"])
     parser.add_argument('--dataset_path', default="./ODIR_dataset", help='Path to dataset root')
-    parser.add_argument('--save_name', help="Name to give checkpoint file")
+    parser.add_argument('--save_name', '-sn', help="Name to give checkpoint file")
 
     # 
     parser.add_argument('--backbone', '-b', default="resnet18", help='Which model to use as backbone', choices=["resnet18", "efficientnet"])
-    parser.add_argument('--use_pretrained', '-pre', action='store_true', help="Use pretrained weights for model (in pretrained_backbone)")
+    parser.add_argument('--load_pretrained', '-pre', action='store_true', help="Use pretrained weights for model (in pretrained_backbone)")
     parser.add_argument('--load_checkpoint', '-ckp', help="Path to fine-tuned params (checkpoint)")
     
     parser.add_argument('--ft_mode', default="classifier", choices=["classifier", "all"],
@@ -465,7 +482,7 @@ if __name__ == "__main__":
     
     # params file
     params_file = None
-    if args.use_pretrained:
+    if args.load_pretrained:
         params_file = {
             'resnet18':     './pretrained_backbone/ckpt_resnet18_ep50.pt',
             'efficientnet': './pretrained_backbone/ckpt_efficientnet_ep50.pt',
@@ -481,13 +498,22 @@ if __name__ == "__main__":
             raise FileNotFoundError(f"No such checkpoint found: {args.load_checkpoint}")
         print('Using fine-tuned checkpoint:', params_file)
 
-    else:
-        print('No params file given, training model from scratch & enabling full fine-tuning mode')
-        args.ft_mode = "all"
-
     # save name
-    save_name = args.save_name # TODO: fix!!
+    savename = args.save_name
+    savedir = "checkpoints"
+    if savename is None:
+        savename = os.path.join( savedir, f"{args.backbone}_best.pt" )
+    else:
+        if not savename.endswith(".pt"):
+            savename += ".pt"
+        if not savename.startswith(savedir):
+            savename = os.path.join( savedir, savename )
     
+    if os.path.exists(savename) and args.mode == "train":
+        if input(f"\033[31mImportant:\033[0m Checkpoint file ('{savename}') already exists. Are you sure you want to replace it?\n ('y' or 'yes') > "
+                ).lower() not in ["y", "yes", "yeahboii"]:
+            print(" ..quitting\n")
+            sys.exit(0)
     
     # MAIN
     # -------------------------------
@@ -496,7 +522,7 @@ if __name__ == "__main__":
         dataset_path = args.dataset_path,
         backbone = args.backbone,
         pretrained_params = params_file,
-        save_name = save_name,
+        save_name = savename,
         freeze_backbone = (args.ft_mode == "classifier"),
         loss_fn = LOSS_FUNCS[args.loss_fn],
         predict_csv = args.predict_csv,
