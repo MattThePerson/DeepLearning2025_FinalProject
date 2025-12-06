@@ -237,7 +237,7 @@ def test(
     model.eval()
     y_true, y_pred = [], []
     with torch.no_grad():
-        for imgs, labels in tqdm(loader):
+        for imgs, labels in tqdm(loader, colour="magenta"):
             imgs = imgs.to(DEVICE)
             outputs = model(imgs)
             probs = torch.sigmoid(outputs).cpu().numpy()
@@ -248,14 +248,16 @@ def test(
     y_true = np.array(y_true) #torch.tensor(y_true).numpy()
     y_pred = np.array(y_pred) #torch.tensor(y_pred).numpy()
 
-    # results to DataFrame
+    # compute metrics
     disease_names = ["DR", "Glaucoma", "AMD"]
     results_data = []
+    disease_counts = []
     
     for i, disease in enumerate(disease_names):  # compute metrics for every disease
         y_t = y_true[:, i]
         y_p = y_pred[:, i]
 
+        disease_counts.append(y_t.sum())
         acc =       accuracy_score(y_t, y_p)
         precision = precision_score(y_t, y_p, average="macro", zero_division=0)
         recall =    recall_score(y_t, y_p, average="macro", zero_division=0)
@@ -264,10 +266,19 @@ def test(
 
         results_data.append([disease, acc, precision, recall, f1, kappa])
 
-    results = pd.DataFrame(data=results_data, columns=["Disease", "Accuracy", "Precision", "Recall", "F1-score", "Kappa"]).set_index("Disease")
+    disease_weights = np.array(disease_counts) / np.sum(disease_counts)
+
+    results = pd.DataFrame(
+        data=results_data, 
+        columns=["Disease", "Accuracy", "Precision", "Recall", "F1-score", "Kappa"],
+    ).set_index("Disease")
+
+    results = results.T
+    results["Average"] = np.average(results.values, axis=1, weights=disease_weights)
     print("========================")
     print("DISEASE SPECIFIC METRICS:\n")
-    print(results)
+    print(results.T)
+    print()
     
     return results
 
@@ -285,17 +296,16 @@ def train(
         save_name="checkpoints/best.pt",
     ):
 
-    # training
-    best_val_loss = float("inf")
     ensure_parent_exists(save_name)
-    # ckpt_path = os.path.join(save_dir, f"best_{name}.pt")
+    print('loss function:', loss_fn)
     
-    # run epochs
+    # iterates
+    best_val_loss = float("inf")
     for epoch in range(epochs):
         # print('training ...')
         model.train()
         train_loss = 0
-        for imgs, labels in train_loader:
+        for imgs, labels in tqdm(train_loader, desc=f"epoch {epoch+1}/{epochs}", colour="purple"):
             imgs, labels = imgs.to(DEVICE), labels.to(DEVICE)
             optimizer.zero_grad()
             outputs = model(imgs)
@@ -317,50 +327,51 @@ def train(
                 val_loss += loss.item() * imgs.size(0)
         val_loss /= len(val_loader.dataset) # type: ignore
 
-        print(f"epoch {epoch+1}/{epochs} Train Loss: {train_loss:.4f} Val Loss: {val_loss:.4f}")
+        print(f"Train Loss: {train_loss:.4f} Val Loss: {val_loss:.4f}")
 
         # save best
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            print(f"    ..saving best model {save_name}")
+            print(f"    ..saving best checkpoint to: {save_name}")
             torch.save(model.state_dict(), save_name)
 
+    return save_name
 
 
 # ========================
 # region MAIN
 # ========================
 def main(
-        mode="train",
-        backbone="resnet18",
-        dataset_path="dataset",
-        pretrained_params=None,
-        save_name=None,
-        freeze_backbone=True, # freeze non-linear layers
-        loss_fn=nn.BCEWithLogitsLoss,
-        attention=None,
-        save_dir="checkpoints",
-        predict_csv="onsite_test_submission.csv",
+        mode = "train",
+        backbone = "resnet18",
+        dataset_path = "dataset",
+        pretrained_params: str|None = None,
+        save_name: str|None = None,
+        freeze_backbone = True, # freeze non-linear layers
+        loss_fn = nn.BCEWithLogitsLoss,
+        attention = None,
+        predict_csv = "onsite_test_submission.csv",
+        # save_dir="checkpoints",
         epochs=10, batch_size=32, lr=1e-4, img_size=256,
     ):
     
     train_loader, val_loader, test_loader, onsite_test_loader = get_dataloaders(dataset_path, img_size, batch_size)
 
-    # model
     print('Building model')
     model = get_model(
-        backbone=backbone,
-        pretrained_params=pretrained_params,
-        freeze_backbone=freeze_backbone,
+        backbone = backbone,
+        pretrained_params = pretrained_params,
+        freeze_backbone = freeze_backbone,
     ).to(DEVICE)
 
-    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
-
+    
     save_name = "checkpoints/test.pt"
 
     # MODE
     match mode:
         case "train": # - train -------
+            optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
+
             print(f'Training {backbone} for {epochs} epochs')
             train(
                 model,
@@ -394,7 +405,7 @@ def main(
             print("Just a test, nothing to see here")
         
         case _:
-            print("oh no, matched none??")
+            print("oh no, no mode is matched??")
 
 
 
@@ -403,7 +414,7 @@ def main(
 # ========================
 
 LOSS_FUNCS = {
-    "bce": nn.BCEWithLogitsLoss,
+    "bce": nn.BCEWithLogitsLoss(),
     "focal": FocalLoss,
     "class_balanced": ClassBalancedLoss,
 }
@@ -427,9 +438,9 @@ if __name__ == "__main__":
     parser.add_argument('--save_name', help="Name to give checkpoint file")
 
     # 
-    parser.add_argument('--backbone', default="resnet18", help='Backbone for fine-tuned model', choices=["resnet18", "efficientnet"])
-    parser.add_argument('--use_pretrained_backbone', action='store_true', help="Use pretrained weights for model (in pretrained_backbone)")
-    parser.add_argument('--checkpoint', help="Path to fine-tuned params")
+    parser.add_argument('--backbone', '-b', default="resnet18", help='Which model to use as backbone', choices=["resnet18", "efficientnet"])
+    parser.add_argument('--use_pretrained', '-pre', action='store_true', help="Use pretrained weights for model (in pretrained_backbone)")
+    parser.add_argument('--load_checkpoint', '-ckp', help="Path to fine-tuned params (checkpoint)")
     
     parser.add_argument('--ft_mode', default="classifier", choices=["classifier", "all"],
                         help="Fine-tuning mode: which params to unfreeze")
@@ -454,20 +465,20 @@ if __name__ == "__main__":
     
     # params file
     params_file = None
-    if args.use_pretrained_backbone:
+    if args.use_pretrained:
         params_file = {
             'resnet18':     './pretrained_backbone/ckpt_resnet18_ep50.pt',
             'efficientnet': './pretrained_backbone/ckpt_efficientnet_ep50.pt',
         }[args.backbone]
         print('using pretrained backbone:', params_file)
     
-    elif args.checkpoint:
+    elif args.load_checkpoint:
         files = [ f for f in os.listdir('.') if f.endswith('.pt') ]
         folder = 'checkpoints'
         files.extend([ os.path.join(folder, f) for f in os.listdir(folder) ])
-        params_file = next((x for x in files if args.checkpoint in x), None)
+        params_file = next((x for x in files if args.load_checkpoint in x), None)
         if params_file is None:
-            raise FileNotFoundError(f"No such checkpoint found: {args.checkpoint}")
+            raise FileNotFoundError(f"No such checkpoint found: {args.load_checkpoint}")
         print('Using fine-tuned checkpoint:', params_file)
 
     else:
@@ -488,7 +499,7 @@ if __name__ == "__main__":
         save_name = save_name,
         freeze_backbone = (args.ft_mode == "classifier"),
         loss_fn = LOSS_FUNCS[args.loss_fn],
-        predict_csv=args.predict_csv,
+        predict_csv = args.predict_csv,
         epochs = args.epochs,
         lr = args.lr, # default: 1e-5
         batch_size = args.batch_size, # default: 32
