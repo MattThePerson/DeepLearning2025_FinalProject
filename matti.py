@@ -314,11 +314,14 @@ def train(
         optimizer,
         loss_fn,
         epochs=10,
-        save_name="checkpoints/best.pt",
-    ):
+        save_name="best.pt",
+        checkpoints_dir="checkpoints",
+        runs_dir="runs",
+    ) -> str:
 
     ensure_parent_exists(save_name)
     print('loss function:', loss_fn)
+    save_name = os.path.join( checkpoints_dir, save_name )
     
     # iterate
     best_val_loss = float("inf")
@@ -367,7 +370,9 @@ def main(
         backbone = "resnet18",
         dataset_path = "dataset",
         pretrained_params: str|None = None,
-        save_name = "checkpoints/best.pt",
+        save_name = "best.pt",
+        checkpoints_dir = "checkpoints",
+        runs_dir = "runs",
         freeze_backbone = True, # freeze non-linear layers
         loss_fn = nn.BCEWithLogitsLoss,
         attention = None,
@@ -390,7 +395,7 @@ def main(
             optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
 
             print(f'Training {backbone} for {epochs} epochs')
-            train(
+            best_ckpt = train(
                 model,
                 train_loader,
                 val_loader,
@@ -398,7 +403,10 @@ def main(
                 loss_fn,
                 epochs=epochs,
                 save_name=save_name,
+                checkpoints_dir=checkpoints_dir,
+                runs_dir=runs_dir,
             )
+            model.load_state_dict(torch.load(best_ckpt, map_location="cpu"))
             test(
                 model,
                 test_loader,
@@ -455,7 +463,7 @@ if __name__ == "__main__":
     parser.add_argument('--save_name', '-sn', help="Name to give checkpoint file")
 
     # 
-    parser.add_argument('--backbone', '-b', default="resnet18", help='Which model to use as backbone', choices=["resnet18", "efficientnet"])
+    parser.add_argument('--backbone', '-b', default="none", help='Which model to use as backbone', choices=["none", "resnet18", "efficientnet"])
     parser.add_argument('--load_pretrained', '-pre', action='store_true', help="Use pretrained weights for model (in pretrained_backbone)")
     parser.add_argument('--load_checkpoint', '-ckp', help="Path to fine-tuned params (checkpoint)")
     
@@ -473,6 +481,8 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=32)
 
     parser.add_argument('--predict_csv', default="onsite_test_submission", help="name of csv for predictions (can include folders)")
+    parser.add_argument('--checkpoints_dir', default="checkpoints", help="Name of default checkpoints save folder")
+    parser.add_argument('--list_checkpoints', action="store_true", help="List all detected checkpoints (.pt files)")
     
     args = parser.parse_args()
     
@@ -480,27 +490,44 @@ if __name__ == "__main__":
     # HANDLE ARGS
     # -------------------------------
     
-    # params file
+    # checkpoint
     params_file = None
-    if args.load_pretrained:
+    if args.load_checkpoint:
+        files = [ f for f in os.listdir('.') if f.endswith('.pt') ]
+        # files.extend([ os.path.join(folder, f) for f in os.listdir(folder) ])
+        files.extend(os.listdir(args.checkpoints_dir))
+        params_file = next((x for x in files if args.load_checkpoint in x), None)
+        if params_file is None:
+            print(f"\n  No such checkpoint found: {args.load_checkpoint}\n\nPlease select from the following:")
+            for i, f in enumerate(files): print(f"  {i+1:>3}: {f}")
+            sys.exit(2)
+            # raise FileNotFoundError(f"No such checkpoint found: {args.load_checkpoint}")
+        print('PARAMS: using fine-tuned checkpoint:', params_file)
+        
+        if args.backbone == "none":
+            if "effnet" in args.load_checkpoint or "efficientnet" in args.load_checkpoint:
+                args.backbone = "efficientnet"
+            elif "resnet18" in args.load_checkpoint:
+                args.backbone = "resnet18"
+            print(f"Automatically detected '{args.backbone}' backbone from checkpoint name")
+        
+    elif not args.load_no_params:
         params_file = {
             'resnet18':     './pretrained_backbone/ckpt_resnet18_ep50.pt',
             'efficientnet': './pretrained_backbone/ckpt_efficientnet_ep50.pt',
         }[args.backbone]
-        print('using pretrained backbone:', params_file)
+        print('PARAMS: using pretrained backbone:', params_file)
     
-    elif args.load_checkpoint:
-        files = [ f for f in os.listdir('.') if f.endswith('.pt') ]
-        folder = 'checkpoints'
-        files.extend([ os.path.join(folder, f) for f in os.listdir(folder) ])
-        params_file = next((x for x in files if args.load_checkpoint in x), None)
-        if params_file is None:
-            raise FileNotFoundError(f"No such checkpoint found: {args.load_checkpoint}")
-        print('Using fine-tuned checkpoint:', params_file)
+    else:
+        print("PARAMS: not using any pretrained/fine-tuned parameters")
+
+    if args.backbone == "none":
+        print("BAD OPTIONS: no backbone selected")
+        sys.exit(2)
 
     # save name
     savename = args.save_name
-    savedir = "checkpoints"
+    savedir = args.checkpoints_dir
     if savename is None:
         savename = os.path.join( savedir, f"{args.backbone}_best.pt" )
     else:
@@ -517,16 +544,22 @@ if __name__ == "__main__":
     
     # MAIN
     # -------------------------------
-    main(
-        mode = args.mode,
-        dataset_path = args.dataset_path,
-        backbone = args.backbone,
-        pretrained_params = params_file,
-        save_name = savename,
-        freeze_backbone = (args.ft_mode == "classifier"),
-        loss_fn = LOSS_FUNCS[args.loss_fn],
-        predict_csv = args.predict_csv,
-        epochs = args.epochs,
-        lr = args.lr, # default: 1e-5
-        batch_size = args.batch_size, # default: 32
-    )
+    if args.list_checkpoints:
+        print('Not doing anything yet')
+    
+    else:
+        main(
+            mode = args.mode,
+            dataset_path = args.dataset_path,
+            backbone = args.backbone,
+            pretrained_params = params_file,
+            save_name = savename,
+            checkpoints_dir = args.checkpoints_dir,
+            runs_dir = "runs",
+            freeze_backbone = (args.ft_mode == "classifier"),
+            loss_fn = LOSS_FUNCS[args.loss_fn],
+            predict_csv = args.predict_csv,
+            epochs = args.epochs,
+            lr = args.lr, # default: 1e-5
+            batch_size = args.batch_size, # default: 32
+        )
