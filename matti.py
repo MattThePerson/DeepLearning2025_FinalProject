@@ -103,10 +103,10 @@ def get_dataloaders(dataset_path: str, img_size=256, batch_size=32):
 def build_model(backbone="resnet18", num_classes=3):
 
     if backbone == "resnet18":
-        model = models.resnet18(weights=None) #"IMAGENET1K_V1") # TODO: should this be None??
+        model = models.resnet18(weights=None)
         model.fc = nn.Linear(model.fc.in_features, num_classes)
     elif backbone == "effnet":
-        model = models.efficientnet_b0(weights=None) #"IMAGENET1K_V1")
+        model = models.efficientnet_b0(weights=None)
         layer_fc: nn.Linear = model.classifier[1] # type: ignore[assignment]
         model.classifier[1] = nn.Linear(layer_fc.in_features, num_classes)
     else:
@@ -180,7 +180,9 @@ def get_parameter_count(model):
     return all_params, trainable_params
 
 def ensure_parent_exists(file: str):
-    os.makedirs(os.path.dirname(file), exist_ok=True)
+    parent = os.path.dirname(file)
+    if parent != '':
+        os.makedirs(parent, exist_ok=True)
 
 def display_loss(train_loss, prev_train_loss, val_loss, prev_val_loss):
     ANSI_reset = "\033[0m"
@@ -363,7 +365,7 @@ def train(
                 val_loss += loss.item() * imgs.size(0)
                 probs = torch.sigmoid(outputs).cpu().numpy()
                 preds = (probs > 0.5).astype(int)
-                y_true.extend(labels.numpy())
+                y_true.extend(labels.cpu().numpy())
                 y_pred.extend(preds)
         val_loss /= len(val_loader.dataset) # type: ignore
         
@@ -382,7 +384,7 @@ def train(
         # display & csv
         display_loss(train_loss, prev_train_loss, val_loss, prev_val_loss)
         prev_train_loss, prev_val_loss = train_loss, val_loss
-        write_to_csv(f"{epoch+1},{train_loss:.5f},{val_loss:.5f},{acc:.f},{precision:.5f},{recall:.5f},{f1:.5f}\n", "a")
+        write_to_csv(f"{epoch+1},{train_loss:.5f},{val_loss:.5f},{acc:.5f},{precision:.5f},{recall:.5f},{f1:.5f}\n", "a")
 
     return save_name
 
@@ -402,7 +404,11 @@ def main(
         loss_fn = nn.BCEWithLogitsLoss,
         attention = None,
         predict_csv = "onsite_test_submission.csv",
-        epochs=10, batch_size=32, lr=1e-4, img_size=256, num_classes=3
+        epochs = 10,
+        opt_class = optim.Adam,
+        opt_kwargs = {},
+        # lr=1e-4,
+        batch_size=32, img_size=256, num_classes=3,
     ):
     
     global DEVICE
@@ -422,7 +428,13 @@ def main(
     # MODE
     match mode:
         case "train": # - train -------
-            optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
+            optimizer = opt_class(model.parameters(), **opt_kwargs)
+            # optimizer = optim.Adam(
+            #     params=filter(lambda p: p.requires_grad, model.parameters()),
+            #     lr=lr,
+            #     weight_decay=1e-5,
+            #     decoupled_weight_decay=False,
+            # )
 
             print(f'Training {backbone} for {epochs} epochs')
             print('loss function:', loss_fn)
@@ -471,9 +483,11 @@ def main(
 # ========================
 
 
-def get_checkpoints(root: Path|str) -> list[Path]:
+def get_checkpoints(root: Path|str) -> list[str]:
     root = Path(root)
-    return [ root / p.relative_to(root) for p in root.rglob("*.pt") ]
+    paths = [ str(root / p.relative_to(root)) for p in root.rglob("*.pt") ]
+    paths = [ pth.replace("\\", "/") for pth in paths ]
+    return paths
 
 DEVICE: torch.device
 
@@ -494,6 +508,11 @@ PRETRAINED_BACKBONES = {
     'effnet':       './pretrained_backbone/ckpt_efficientnet_ep50.pt',
 }
 
+OPTIMIZERS = {
+    "sgd":  (optim.SGD,  {"lr", "momentum", "weight_decay"}),
+    "adam": (optim.Adam, {"lr", "weight_decay"}),
+}
+
 if __name__ == "__main__":
 
     # ARGS
@@ -510,7 +529,6 @@ if __name__ == "__main__":
                             help="Don't load any params (re-initialize weights, train from scratch)")
     parser.add_argument('--load_checkpoint', '-ckp',
                             help="Path to checkpoint to load (relative to `checkpoints/`) (else: load pretrained backbone from `pretrained_backbone/`)")
-    # parser.add_argument('--load_pretrained', '-pre', action='store_true', help="Use pretrained weights for model (in pretrained_backbone)")
     
     # train args
     parser.add_argument('--save_name', '-sn', help="Path to save best checkpoint (in checkpoints/)")
@@ -518,18 +536,23 @@ if __name__ == "__main__":
                         help="Fine-tuning mode: which params to unfreeze")
     parser.add_argument('--loss_fn', default="bce", help="Loss function to use during training")
     parser.add_argument('--attention', help="Attention mechanism to use (use help to list options)")
-    
-    parser.add_argument('--epochs', type=int, default=20)
-    parser.add_argument('--lr', type=float, default=1e-5)
     parser.add_argument('--batch_size', type=int, default=32)
+    
+    # hyperparams
+    parser.add_argument('--epochs', type=int, default=20)
+    parser.add_argument('--optimizer', type=str, default="adam")
+    parser.add_argument('--lr', type=float, default=1e-5)
+    parser.add_argument('--weight_decay', type=float, default=0.0)
+    parser.add_argument('--momentum', type=float, default=0.0, help="Only for SGD optimizer")
 
     # misc
-    parser.add_argument('--predict_csv', default="onsite_test_submission", help="Path to csv to save output in predict mode")
+    parser.add_argument('--predict_csv', help="Path to csv to save output in predict mode")
     parser.add_argument('--checkpoints_dir', default="checkpoints", help="Folder to save and load checkpoints (default `checkpoints/`)")
-    parser.add_argument('--list_checkpoints', action="store_true", help="List all detected checkpoints")
+    parser.add_argument('--list_checkpoints', '-l', action="store_true", help="List all detected checkpoints")
+    parser.add_argument('--hyperparams_to_name', '-htn', help="") # TODO: implement
 
     parser.add_argument('--num_classes', type=int, default=3,
-                            help="Number of classes we want to detect (changes shape of classifier)")
+                            help="Number of classes we want to detect (changes shape of classifier). Note: if not 3, pretrained backbone won't load.")
     
     args = parser.parse_args()
     
@@ -543,7 +566,7 @@ if __name__ == "__main__":
         print(f"Checkpoints detected in '{args.checkpoints_dir}':")
         for i, f in enumerate(checkpoints):
             print(f"  {i+1:>3}: {f}")
-        sys.exit()
+        sys.exit(0)
     
     params_file = None
     
@@ -587,7 +610,6 @@ if __name__ == "__main__":
             sys.exit(2)
         print('[PARAMS] using pretrained backbone:', params_file)
     
-
     # save name
     savename = args.save_name
     if savename is None:
@@ -601,6 +623,19 @@ if __name__ == "__main__":
                 ).lower() not in ["y", "yes", "yeahboii"]:
             print(" ..quitting\n")
             sys.exit(0)
+    
+    # optimizer
+    opt_class, valid_keys = OPTIMIZERS.get(args.optimizer, (None, None))
+    if opt_class is None:
+        print(f"No such optimizer: {args.optim}.\nAvailable optimizers:")
+        for i, (k, v) in enumerate(OPTIMIZERS.items()):
+            print(f"  {i+1:>3}: {k:<12} hparams={{{v}}}")
+        sys.exit(2)
+    opt_kwargs = { k: getattr(args, k) for k in valid_keys }
+    print(f"[OPTIMIZER] Using optimizer: {opt_class} with hyperparams:")
+    for k, v in opt_kwargs.items():
+        print(f"{k:>15}: {v}")
+    print()
     
     # loss fn
     if args.loss_fn not in LOSS_FUNCS:
@@ -620,23 +655,35 @@ if __name__ == "__main__":
             print(f"  {i+1:>3}: {k:<18} ({v})")
         sys.exit(2)
     
+    # autoname predict_csv
+    if args.predict_csv is None and params_file is not None:
+        params_file_linux = params_file.replace("\\", "/")
+        params_file_linux = params_file_linux.replace("checkpoints/", "predictions/")
+        args.predict_csv = params_file_linux.replace(".pt", "") + ".csv"
+    
     
     # MAIN
     # -------------------------------
     
-    main(
-        mode = args.mode,
-        dataset_path = args.dataset_path,
-        backbone = args.backbone,
-        pretrained_params = params_file,
-        save_name = savename,
-        checkpoints_dir = args.checkpoints_dir,
-        runs_dir = "runs",
-        freeze_backbone = (args.ft_mode == "classifier"),
-        loss_fn = LOSS_FUNCS[args.loss_fn],
-        predict_csv = args.predict_csv,
-        epochs = args.epochs,
-        lr = args.lr, # default: 1e-5
-        batch_size = args.batch_size, # default: 32
-        num_classes = args.num_classes,
-    )
+    try:
+        main(
+            mode = args.mode,
+            dataset_path = args.dataset_path,
+            backbone = args.backbone,
+            pretrained_params = params_file,
+            save_name = savename,
+            checkpoints_dir = args.checkpoints_dir,
+            runs_dir = "runs",
+            freeze_backbone = (args.ft_mode == "classifier"),
+            loss_fn = LOSS_FUNCS[args.loss_fn],
+            predict_csv = args.predict_csv,
+            epochs = args.epochs,
+            opt_class = opt_class,
+            opt_kwargs = opt_kwargs,
+            # lr = args.lr,                                       # default: 1e-5
+            # batch_size = args.batch_size,                       # default: 32
+            num_classes = args.num_classes,
+        )
+    except KeyboardInterrupt:
+        print("\n  ..caught KeyboardInterrupt, stopping\n")
+    
