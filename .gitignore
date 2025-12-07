@@ -1,10 +1,11 @@
 
 # general
 __pycache__
+.~lock.*
 
 # custom
 #pretrained_backbone
 checkpoints
-*_EXAMPLE**
 predictions
-.~lock.*
+runs
+*_EXAMPLE**
