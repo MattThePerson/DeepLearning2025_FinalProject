@@ -9,4 +9,5 @@ checkpoints
 predictions
 runs
 test_results
+.tensorboard
 *_EXAMPLE**

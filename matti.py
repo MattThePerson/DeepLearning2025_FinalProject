@@ -13,6 +13,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, models
+from torch.utils.tensorboard import SummaryWriter
+
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, cohen_kappa_score
 
 from tqdm import tqdm
@@ -199,7 +201,12 @@ def display_loss(train_loss, prev_train_loss, val_loss, prev_val_loss):
 def save_test_results(df: pd.DataFrame, params: str|None, save_dir="test_results"):
     save_name = f"{save_dir}/test_results.csv"
     if params is not None:
-        params = params.replace("\\", "/").replace("checkpoints/", f"{save_dir}/")
+        params = params.replace("\\", "/")
+        substr = "checkpoints/"
+        if substr in params:
+            params = params.replace(substr, f"{save_dir}/")
+        else:
+            params = f"{save_dir}/{params}"
         save_name = params.replace('.pt', '.csv')
     ensure_parent_exists(save_name)
     print('saving test results to:', save_name)
@@ -341,6 +348,8 @@ def train(
         save_csv=True,
     ) -> str:
 
+    writer = SummaryWriter(f".tensorboard/{save_name.replace('.pt', '')}")
+
     # csv writing
     run_csv_path = os.path.join( runs_dir, save_name.replace(".pt", ".csv") )
     ensure_parent_exists(run_csv_path)
@@ -389,9 +398,9 @@ def train(
         
         # metrics
         acc =       accuracy_score(y_true, y_pred)
-        precision = precision_score(y_true, y_pred, average="macro", zero_division=0)
-        recall =    recall_score(y_true, y_pred, average="macro", zero_division=0)
-        f1 =        f1_score(y_true, y_pred, average="macro", zero_division=0)
+        precision = precision_score(y_true, y_pred, average="weighted", zero_division=0)
+        recall =    recall_score(y_true, y_pred, average="weighted", zero_division=0)
+        f1 =        f1_score(y_true, y_pred, average="weighted", zero_division=0)
 
         # save best
         if val_loss < best_val_loss:
@@ -399,11 +408,18 @@ def train(
             print(f"    ..saving best checkpoint to: {save_name}")
             torch.save(model.state_dict(), save_name)
         
-        # display & csv
+        # display & write
         display_loss(train_loss, prev_train_loss, val_loss, prev_val_loss)
         prev_train_loss, prev_val_loss = train_loss, val_loss
         write_to_csv(f"{epoch+1},{train_loss:.5f},{val_loss:.5f},{acc:.5f},{precision:.5f},{recall:.5f},{f1:.5f}\n", "a")
+        writer.add_scalar("loss/train", train_loss, epoch+1)
+        writer.add_scalar("loss/val", val_loss, epoch+1)
+        writer.add_scalar("metrics/acc", acc, epoch+1)
+        writer.add_scalar("metrics/precision", precision, epoch+1)
+        writer.add_scalar("metrics/recall", recall, epoch+1)
+        writer.add_scalar("metrics/f1", f1, epoch+1)
 
+    writer.close()
     return save_name
 
 
@@ -431,7 +447,7 @@ def main(
     global DEVICE
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print('using device:', DEVICE)
-
+    
     train_loader, val_loader, test_loader, onsite_test_loader = get_dataloaders(dataset_path, img_size, batch_size)
 
     print('Building model')
