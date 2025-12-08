@@ -193,7 +193,15 @@ def display_loss(train_loss, prev_train_loss, val_loss, prev_val_loss):
     train_msg = f"train loss: {train_loss:.4f} ({train_diff_col}{train_diff:+.4f}{ANSI_reset})"
     val_msg =     f"val loss: {val_loss:.4f} ({val_diff_col}{val_diff:+.4f}{ANSI_reset})"
     print(f"  {train_msg:<35}   {val_msg}")
-    
+
+def save_test_results(df: pd.DataFrame, params: str|None, save_dir="test_results"):
+    save_name = f"{save_dir}/test_results.csv"
+    if params is not None:
+        params = params.replace("\\", "/").replace("checkpoints/", f"{save_dir}/")
+        save_name = params.replace('.pt', '.csv')
+    ensure_parent_exists(save_name)
+    print('saving test results to:', save_name)
+    df.to_csv(save_name)
 
 # ========================
 # region CUSTOM LOSS
@@ -273,36 +281,33 @@ def test(
     # compute metrics
     disease_names = ["DR", "Glaucoma", "AMD"]
     results_data = []
-    disease_counts = []
     
     for i, disease in enumerate(disease_names):  # compute metrics for every disease
         y_t = y_true[:, i]
         y_p = y_pred[:, i]
 
-        disease_counts.append(y_t.sum())
         acc =       accuracy_score(y_t, y_p)
-        precision = precision_score(y_t, y_p, average="macro", zero_division=0)
-        recall =    recall_score(y_t, y_p, average="macro", zero_division=0)
-        f1 =        f1_score(y_t, y_p, average="macro", zero_division=0)
+        precision = precision_score(y_t, y_p, average="binary", zero_division=0)
+        recall =    recall_score(y_t, y_p, average="binary", zero_division=0)
+        f1 =        f1_score(y_t, y_p, average="binary", zero_division=0)
         kappa =     cohen_kappa_score(y_t, y_p)
 
         results_data.append([disease, acc, precision, recall, f1, kappa])
 
-    disease_weights = np.array(disease_counts) / np.sum(disease_counts)
-
     results = pd.DataFrame(
         data=results_data, 
-        columns=["Disease", "Accuracy", "Precision", "Recall", "F1-score", "Kappa"],
-    ).set_index("Disease")
+        columns=["Category", "Accuracy", "Precision", "Recall", "F1-score", "Kappa"],
+    ).set_index("Category")
 
     results = results.T
-    results["Average"] = np.average(results.values, axis=1, weights=disease_weights)
+    disease_occurances = y_true.sum(axis=0)
+    results["Average"] = np.average(results.values, axis=1, weights=disease_occurances)
     print("========================")
     print("DISEASE SPECIFIC METRICS:\n")
     print(results.T)
     print()
     
-    return results
+    return results.T
 
 
 # ========================
@@ -439,16 +444,18 @@ def main(
             )
             print(f"Loading best checkpoint '{best_ckpt}' and testing model")
             model.load_state_dict(torch.load(best_ckpt, map_location="cpu"))
-            test(
+            results_df = test(
                 model,
                 test_loader,
             )
+            save_test_results(results_df, pretrained_params)
         
         case "test":  # - test ---------
-            test(
+            results_df = test(
                 model,
                 test_loader,
             )
+            save_test_results(results_df, pretrained_params)
         
         case "predict": # - predict ---
             print("Predicting ...")
@@ -526,7 +533,7 @@ if __name__ == "__main__":
     # misc
     parser.add_argument('--predict_csv', default="onsite_test_submission", help="Path to csv to save output in predict mode")
     parser.add_argument('--checkpoints_dir', default="checkpoints", help="Folder to save and load checkpoints (default `checkpoints/`)")
-    parser.add_argument('--list_checkpoints', action="store_true", help="List all detected checkpoints")
+    parser.add_argument('--list_checkpoints', '-ls', action="store_true", help="List all detected checkpoints")
 
     parser.add_argument('--num_classes', type=int, default=3,
                             help="Number of classes we want to detect (changes shape of classifier)")

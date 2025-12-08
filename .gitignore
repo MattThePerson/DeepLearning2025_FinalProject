@@ -8,4 +8,5 @@ __pycache__
 checkpoints
 predictions
 runs
+test_results
 *_EXAMPLE**
