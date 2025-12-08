@@ -205,6 +205,19 @@ def save_test_results(df: pd.DataFrame, params: str|None, save_dir="test_results
     print('saving test results to:', save_name)
     df.to_csv(save_name)
 
+def hyperparams_to_string(a) -> str:
+    s = ""
+    if a.loss_fn != "bce":
+        s += f"loss={a.loss_fn}"
+    if a.attention:
+        s += f"_attn={a.attention}"
+    optim = f"optim={a.optimizer}_lr={a.lr}"
+    if a.momentum != 0.0:
+        optim += f"_mom={a.momentum:.3f}"
+    if a.weight_decay != 0.0:
+        optim += f"_dec={a.weight_decay:.3f}"
+    return f"{s}_{optim}_{a.epochs}ep"
+
 # ========================
 # region CUSTOM LOSS
 # ========================
@@ -412,7 +425,6 @@ def main(
         epochs = 10,
         opt_class = optim.Adam,
         opt_kwargs = {},
-        # lr=1e-4,
         batch_size=32, img_size=256, num_classes=3,
     ):
     
@@ -460,7 +472,7 @@ def main(
                 model,
                 test_loader,
             )
-            save_test_results(results_df, pretrained_params)
+            save_test_results(results_df, save_name)
         
         case "test":  # - test ---------
             results_df = test(
@@ -518,6 +530,7 @@ PRETRAINED_BACKBONES = {
 OPTIMIZERS = {
     "sgd":  (optim.SGD,  {"lr", "momentum", "weight_decay"}),
     "adam": (optim.Adam, {"lr", "weight_decay"}),
+    "adamw": (optim.AdamW, {"lr", "weight_decay"}),
 }
 
 if __name__ == "__main__":
@@ -556,7 +569,7 @@ if __name__ == "__main__":
     parser.add_argument('--predict_csv', help="Path to csv to save output in predict mode")
     parser.add_argument('--checkpoints_dir', default="checkpoints", help="Folder to save and load checkpoints (default `checkpoints/`)")
     parser.add_argument('--list_checkpoints', '-l', '-ls', action="store_true", help="List all detected checkpoints")
-    parser.add_argument('--hyperparams_to_name', '-htn', help="") # TODO: implement
+    parser.add_argument('--hyperparams_to_name', '-htn', action='store_true', help="") # TODO: implement
 
     parser.add_argument('--num_classes', type=int, default=3,
                             help="Number of classes we want to detect (changes shape of classifier). Note: if not 3, pretrained backbone won't load.")
@@ -617,20 +630,6 @@ if __name__ == "__main__":
             sys.exit(2)
         print('[PARAMS] using pretrained backbone:', params_file)
     
-    # save name
-    savename = args.save_name
-    if savename is None:
-        savename = f"{args.backbone}_ft-{args.ft_mode}_lr-{args.lr}_{args.epochs}ep_best.pt"
-    else:
-        if not savename.endswith(".pt"):
-            savename += ".pt"
-    
-    if os.path.exists( os.path.join(args.checkpoints_dir, savename) ) and args.mode == "train":
-        if input(f"\033[31mImportant:\033[0m Checkpoint file ('{savename}') already exists. Are you sure you want to replace it?\n ('y' or 'yes') > "
-                ).lower() not in ["y", "yes", "yeahboii"]:
-            print(" ..quitting\n")
-            sys.exit(0)
-    
     # optimizer
     opt_class, valid_keys = OPTIMIZERS.get(args.optimizer, (None, None))
     if opt_class is None:
@@ -667,6 +666,23 @@ if __name__ == "__main__":
         params_file_linux = params_file.replace("\\", "/")
         params_file_linux = params_file_linux.replace("checkpoints/", "predictions/")
         args.predict_csv = params_file_linux.replace(".pt", "") + ".csv"
+    
+    # save name
+    savename = args.save_name
+    hyper_str = hyperparams_to_string(args)
+    
+    if savename is None:
+        savename = f"best"
+    if args.hyperparams_to_name:
+        savename += f"_{args.backbone}_{args.ft_mode}_({hyper_str})"
+    if not savename.endswith(".pt"):
+        savename += ".pt"
+    
+    if os.path.exists( os.path.join(args.checkpoints_dir, savename) ) and args.mode == "train":
+        if input(f"\033[31mImportant:\033[0m Checkpoint file ('{savename}') already exists. Are you sure you want to replace it?\n ('y' or 'yes') > "
+                ).lower() not in ["y", "yes", "yeahboii"]:
+            print(" ..quitting\n")
+            sys.exit(0)
     
     
     # MAIN
