@@ -96,40 +96,103 @@ def get_dataloaders(dataset_path: str, img_size=256, batch_size=32):
     return train_loader, val_loader, test_loader, onsite_test_loader
 
 
+# ========================
+# region ATTN MODELS
+# ========================
+
+from typing import Any
+from torchvision.models.efficientnet import EfficientNet, _efficientnet_conf
+
+
+class EfficientNet_MHA(EfficientNet):
+    def __init__(
+            self,
+            num_heads: int=8,
+            **kwargs: Any,
+        ):
+            super().__init__(**kwargs)
+            embed_dim = 1280 # NOTE: According to ChatGPT, must verify!
+            self.mha = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads, batch_first=True)
+    
+    def attention(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.flatten(2).transpose(1, 2) # (N, H*W, C)
+        x, _ = self.mha(x, x, x)
+        x = torch.mean(x, dim=1) # (N, 1, C)
+        return x
+    
+    def _forward_impl(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.features(x)    # (N, C, W, H)
+
+        # x = self.avgpool(x)     # (N, C, 1, 1)
+        x = self.attention(x)
+        x = torch.flatten(x, 1) # (N, C)
+
+        x = self.classifier(x)
+        return x
+
+
+# get instance of efficientnet_b0_MHA
+def efficientnet_b0_MHA(
+    **kwargs: Any
+) -> EfficientNet_MHA:
+
+    inverted_residual_setting, last_channel = _efficientnet_conf("efficientnet_b0", width_mult=1.0, depth_mult=1.0)
+
+    return EfficientNet_MHA(
+        inverted_residual_setting=inverted_residual_setting,
+        dropout=0.2,
+        last_channel=last_channel,
+        **kwargs,
+    )
 
 
 # ========================
 # region BUILD MODEL
 # ========================
 
-def build_model(backbone="resnet18", num_classes=3):
 
-    if backbone == "resnet18":
+def build_resnet(attn=None, num_classes=3):
+
+    if attn is None:
         model = models.resnet18(weights=None)
-        model.fc = nn.Linear(model.fc.in_features, num_classes)
-    elif backbone == "effnet":
-        model = models.efficientnet_b0(weights=None)
-        layer_fc: nn.Linear = model.classifier[1] # type: ignore[assignment]
-        model.classifier[1] = nn.Linear(layer_fc.in_features, num_classes)
     else:
-        raise ValueError(f"Unsupported backbone: {backbone}")
-    
+        raise Exception("No attention mechanisms implemented for ResNet")
+        
+    model.fc = nn.Linear(model.fc.in_features, num_classes)
     return model
 
 
-def get_model(backbone="resnet18", pretrained_params=None, freeze_backbone=False, num_classes=3):
-    
-    model = build_model(backbone, num_classes)
-    
-    # parameters freezing
-    if freeze_backbone:
-        print('FREEZING: freezing model backbone (non-Linear layers)')
-        model = freeze_non_linear_layers(model)
-    
+def build_efficientnet(attn=None, num_classes=3):
+
+    if attn is None:
+        model = models.efficientnet_b0(weights=None)
+    elif attn == "MHA":
+        model = efficientnet_b0_MHA()
+    # elif attn == "SE":
+    #     ...
+    else: 
+        raise Exception(f"No such attention mechanism for EfficientNet: {attn}")
+
+    layer_fc: nn.Linear = model.classifier[1] # type: ignore[assignment]
+    model.classifier[1] = nn.Linear(layer_fc.in_features, num_classes)
+    return model
+
+
+def build_model(backbone="resnet18", attn=None, num_classes=3):
+
+    if backbone == "resnet18":
+        model = build_resnet(attn, num_classes)
+    elif backbone == "effnet":
+        model = build_efficientnet(attn, num_classes)
     else:
-        print('FREEZING: Unfreezing all layers')
-        for p in model.parameters():
-            p.requires_grad = True
+        raise ValueError(f"Unsupported backbone: {backbone}")
+
+    return model
+
+
+def get_model(backbone="resnet18", attn=None, pretrained_params=None, freeze_backbone=False, num_classes=3):
+    
+    model = build_model(backbone, attn, num_classes)
     
     # pretrained params
     if pretrained_params is not None:
@@ -144,12 +207,23 @@ def get_model(backbone="resnet18", pretrained_params=None, freeze_backbone=False
     else:
         print('\033[33mImportant:\033[0m Not loading any params, training model from SCRATCH')
     
+    # parameters freezing
+    if freeze_backbone:
+        print('FREEZING: freezing model backbone (non-Linear layers)')
+        model = freeze_non_linear_layers(model)
+    
+    else:
+        print('FREEZING: Unfreezing all layers')
+        for p in model.parameters():
+            p.requires_grad = True
+    
     # print param amounts
     all_params, trainable_params = get_parameter_count(model)
     print('=====================')
     print('    LOADED MODEL')
     print('---------------------')
     print('backbone:', backbone)
+    print('attn:', attn)
     print('pretrained params:', pretrained_params)
     print('parameter count:  {:_d}'.format(all_params))
     print('trainable params: {:_d}'.format(trainable_params))
@@ -216,8 +290,8 @@ def hyperparams_to_string(a) -> str:
     s = ""
     if a.loss_fn != "bce":
         s += f"loss={a.loss_fn}"
-    if a.attention:
-        s += f"_attn={a.attention}"
+    if a.attention_mechanism:
+        s += f"_attn={a.attention_mechanism}"
     optim = f"optim={a.optimizer}_lr={a.lr}"
     if a.momentum != 0.0:
         optim += f"_mom={a.momentum:.3f}"
@@ -436,7 +510,7 @@ def main(
         runs_dir = "runs",
         freeze_backbone = True, # freeze non-linear layers
         loss_fn = nn.BCEWithLogitsLoss,
-        attention = None,
+        attention_mechanism = None,
         predict_csv = "onsite_test_submission.csv",
         epochs = 10,
         opt_class = optim.Adam,
@@ -453,6 +527,7 @@ def main(
     print('Building model')
     model = get_model(
         backbone = backbone,
+        attn = attention_mechanism,
         pretrained_params = pretrained_params,
         freeze_backbone = freeze_backbone,
         num_classes = num_classes,
@@ -461,7 +536,10 @@ def main(
     # MODE
     match mode:
         case "train": # - train -------
-            optimizer = opt_class(model.parameters(), **opt_kwargs)
+            optimizer = opt_class(
+                filter(lambda p: p.requires_grad, model.parameters()),
+                **opt_kwargs,
+            )
             # optimizer = optim.Adam(
             #     params=filter(lambda p: p.requires_grad, model.parameters()),
             #     lr=lr,
@@ -571,7 +649,7 @@ if __name__ == "__main__":
     parser.add_argument('--ft_mode', default="classifier", choices=["classifier", "all"],
                         help="Fine-tuning mode: which params to unfreeze")
     parser.add_argument('--loss_fn', default="bce", help="Loss function to use during training")
-    parser.add_argument('--attention', help="Attention mechanism to use (use help to list options)")
+    parser.add_argument('--attention_mechanism', '-attn', help="Attention mechanism to use (use help to list options)")
     parser.add_argument('--batch_size', type=int, default=32)
     
     # hyperparams
@@ -585,7 +663,7 @@ if __name__ == "__main__":
     parser.add_argument('--predict_csv', help="Path to csv to save output in predict mode")
     parser.add_argument('--checkpoints_dir', default="checkpoints", help="Folder to save and load checkpoints (default `checkpoints/`)")
     parser.add_argument('--list_checkpoints', '-l', '-ls', action="store_true", help="List all detected checkpoints")
-    parser.add_argument('--hyperparams_to_name', '-htn', action='store_true', help="") # TODO: implement
+    parser.add_argument('--hyperparams_to_name', '-htn', action='store_true', help="")
 
     parser.add_argument('--num_classes', type=int, default=3,
                             help="Number of classes we want to detect (changes shape of classifier). Note: if not 3, pretrained backbone won't load.")
@@ -669,8 +747,8 @@ if __name__ == "__main__":
         sys.exit(2)
     
     # attention
-    if args.attention is not None and args.attention not in ATTENTION_MECHANISMS:
-        if args.attention != "help":
+    if args.attention_mechanism is not None and args.attention_mechanism not in ATTENTION_MECHANISMS:
+        if args.attention_mechanism != "help":
             print("[ERROR] No such attention mechanism:", args.attention)
         print("Available attention mechanisms:")
         for i, (k, v) in enumerate(ATTENTION_MECHANISMS.items()):
@@ -715,6 +793,7 @@ if __name__ == "__main__":
             runs_dir = "runs",
             freeze_backbone = (args.ft_mode == "classifier"),
             loss_fn = LOSS_FUNCS[args.loss_fn],
+            attention_mechanism = args.attention_mechanism,
             predict_csv = args.predict_csv,
             epochs = args.epochs,
             opt_class = opt_class,
