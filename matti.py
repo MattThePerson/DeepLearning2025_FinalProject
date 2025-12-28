@@ -13,16 +13,16 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, models
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard.writer import SummaryWriter
 
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, cohen_kappa_score
 
 from tqdm import tqdm
 import csv
 
-# ========================
+# ======================================================================================================================
 # region Data Sets/Loaders
-# ========================
+# ======================================================================================================================
 class RetinaMultiLabelDataset(Dataset):
     def __init__(self, csv_file, image_dir, transform=None):
         self.data = pd.read_csv(csv_file)
@@ -96,9 +96,9 @@ def get_dataloaders(dataset_path: str, img_size=256, batch_size=32):
     return train_loader, val_loader, test_loader, onsite_test_loader
 
 
-# ========================
+# ======================================================================================================================
 # region ATTN MODELS
-# ========================
+# ======================================================================================================================
 
 from typing import Any
 from torchvision.models.efficientnet import EfficientNet, _efficientnet_conf
@@ -146,9 +146,9 @@ def efficientnet_b0_MHA(
     )
 
 
-# ========================
+# ======================================================================================================================
 # region BUILD MODEL
-# ========================
+# ======================================================================================================================
 
 
 def build_resnet(attn=None, num_classes=3):
@@ -195,11 +195,11 @@ def get_model(backbone="resnet18", attn=None, pretrained_params=None, freeze_bac
     model = build_model(backbone, attn, num_classes)
     
     # pretrained params
-    if pretrained_params is not None:
+    if pretrained_params is not None: # and backbone in ["resnet18", "effnet"]:
         print('loading params:', pretrained_params)
         state_dict = torch.load(pretrained_params, map_location="cpu")
         try:
-            model.load_state_dict(state_dict)
+            model.load_state_dict(state_dict, strict=False)
         except:
             print(f"ERROR: Incompatible backbone ({backbone}) and params file ({pretrained_params})\n ...exiting")
             sys.exit(2)
@@ -233,9 +233,9 @@ def get_model(backbone="resnet18", attn=None, pretrained_params=None, freeze_bac
     return model
 
 
-# ========================
+# ======================================================================================================================
 # region HELPERS
-# ========================
+# ======================================================================================================================
 
 def freeze_non_linear_layers(model):
     """
@@ -299,9 +299,9 @@ def hyperparams_to_string(a) -> str:
         optim += f"_dec={a.weight_decay:.3f}"
     return f"{s}_{optim}_{a.epochs}ep"
 
-# ========================
+# ======================================================================================================================
 # region CUSTOM LOSS
-# ========================
+# ======================================================================================================================
 
 def FocalLoss(x):
     """
@@ -309,6 +309,7 @@ def FocalLoss(x):
     training on hard, misclassified ones.
     """
     raise NotImplementedError()
+
 
 def ClassBalancedLoss(x):
     """
@@ -318,9 +319,9 @@ def ClassBalancedLoss(x):
     raise NotImplementedError()
 
 
-# ========================
+# ======================================================================================================================
 # region predict
-# ========================
+# ======================================================================================================================
 def predict(
         model: nn.Module,
         loader: DataLoader,
@@ -350,9 +351,9 @@ def predict(
         writer.writerow(["id","D","G","A"])
         writer.writerows(data)
 
-# ========================
+# ======================================================================================================================
 # region test
-# ========================
+# ======================================================================================================================
 def test(
         model: nn.Module,
         loader: DataLoader,
@@ -406,9 +407,9 @@ def test(
     return results.T
 
 
-# ========================
+# ======================================================================================================================
 # region train
-# ========================
+# ======================================================================================================================
 def train(
         model,
         train_loader,
@@ -497,9 +498,9 @@ def train(
     return save_name
 
 
-# ========================
+# ======================================================================================================================
 # region MAIN
-# ========================
+# ======================================================================================================================
 def main(
         mode = "train",
         backbone = "resnet18",
@@ -591,9 +592,9 @@ def main(
 
 
 
-# ========================
+# ======================================================================================================================
 # region CLI
-# ========================
+# ======================================================================================================================
 
 
 def get_checkpoints(root: Path|str) -> list[str]:
@@ -662,7 +663,7 @@ if __name__ == "__main__":
     # misc
     parser.add_argument('--predict_csv', help="Path to csv to save output in predict mode")
     parser.add_argument('--checkpoints_dir', default="checkpoints", help="Folder to save and load checkpoints (default `checkpoints/`)")
-    parser.add_argument('--list_checkpoints', '-l', '-ls', action="store_true", help="List all detected checkpoints")
+    parser.add_argument('--list_checkpoints', '-ls', action="store_true", help="List all detected checkpoints")
     parser.add_argument('--hyperparams_to_name', '-htn', action='store_true', help="")
 
     parser.add_argument('--num_classes', type=int, default=3,
