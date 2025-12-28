@@ -10,6 +10,7 @@ import numpy as np
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, models
@@ -303,20 +304,58 @@ def hyperparams_to_string(a) -> str:
 # region CUSTOM LOSS
 # ======================================================================================================================
 
-def FocalLoss(x):
+class MyFocalLossWithLogits(nn.Module):
     """
-    Focal Loss: A loss function designed to address class imbalance by downweighting easy examples and focusing
-    training on hard, misclassified ones.
+    *(Description from assignment) Focal Loss: A loss function designed to address class imbalance by downweighting easy examples and focusing
+    training on hard, misclassified ones.*
+    
+    My custom implementation of Focal Loss (with logits). Had some help from gpt-5. 
+    
+    Implements the equation:
+
+        FL(p_t) = −α_t (1 − pₜ)^γ log(p_t)
+    
+    Forward: shape of logits and targets is identical. 
     """
-    raise NotImplementedError()
+    def __init__(self, gamma: float=5.0, reduction: str="mean"):
+        super().__init__()
+        self.gamma = gamma
+        self.reduction = reduction
+    
+    def get_sample_probabilities(self, logits, targets):
+        """ Returns the models estimated probability for the correct class """
+        probs = F.softmax(logits, dim=1)
+        p_t = (probs * targets).sum(dim=1)
+        return p_t
+    
+    def apply_reduction(self, loss):
+        if self.reduction == "mean":
+            return loss.mean()
+        else:
+            return loss.sum()
+    
+    def forward(self, logits, targets):
+        p_t = self.get_sample_probabilities(logits, targets)
+        p_t = torch.clamp(p_t, min=1e-7, max=1.0)  
+        loss = - ((1 - p_t) ** self.gamma) * torch.log(p_t)
+        return self.apply_reduction(loss)
 
 
-def ClassBalancedLoss(x):
+
+class MyClassBalancedLossWithLogits(nn.Module):
     """
-    Class-Balanced Loss: Re-weight the BCE loss according to class frequency. This is a common method for handling
-    class imbalance.
+    *(Given description) Class-Balanced Loss: Re-weight the BCE loss according to class frequency. This is a common method for handling
+    class imbalance.*
+    
+    
     """
-    raise NotImplementedError()
+    def __init__(self, reduction: str="mean"):
+        super().__init__()
+        self.reduction = reduction
+
+    def forward(self, logits, targets):
+        raise NotImplementedError()
+
 
 
 # ======================================================================================================================
@@ -606,9 +645,9 @@ def get_checkpoints(root: Path|str) -> list[str]:
 DEVICE: torch.device
 
 LOSS_FUNCS = {
-    "bce": nn.BCEWithLogitsLoss(),
-    "focal": FocalLoss,
-    "class_balanced": ClassBalancedLoss,
+    "bce":              nn.BCEWithLogitsLoss(),
+    "focal":            MyFocalLossWithLogits(),
+    "class_balanced":   MyClassBalancedLossWithLogits(),
 }
 
 # TODO: implement
