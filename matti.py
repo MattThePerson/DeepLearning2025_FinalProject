@@ -1,6 +1,8 @@
 """
 Code for training and fine-tuning. By Matt Stirling. 
 """
+import argparse
+
 import os
 import sys
 from pathlib import Path
@@ -20,6 +22,10 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 
 from tqdm import tqdm
 import csv
+
+
+DEVICE: torch.device
+
 
 # ======================================================================================================================
 # region Data Sets/Loaders
@@ -153,7 +159,7 @@ def efficientnet_b0_MHA(
 
 
 def build_resnet(attn=None, num_classes=3):
-
+    # models.resnet.ResNet
     if attn is None:
         model = models.resnet18(weights=None)
     else:
@@ -164,7 +170,7 @@ def build_resnet(attn=None, num_classes=3):
 
 
 def build_efficientnet(attn=None, num_classes=3):
-
+    # models.efficientnet.EfficientNet
     if attn is None:
         model = models.efficientnet_b0(weights=None)
     elif attn == "MHA":
@@ -179,12 +185,47 @@ def build_efficientnet(attn=None, num_classes=3):
     return model
 
 
+def build_swin_b(num_classes=3):
+    # models.swin_transformer.SwinTransformer
+    model = models.swin_b(
+        weights = models.Swin_B_Weights.IMAGENET1K_V1,
+    )
+    model.head = nn.Linear(model.head.in_features, num_classes)
+    return model
+
+
+def build_swin_t(num_classes=3):
+    # models.swin_transformer.SwinTransformer
+    model = models.swin_t(
+        weights = models.Swin_T_Weights.IMAGENET1K_V1,
+    )
+    model.head = nn.Linear(model.head.in_features, num_classes)
+    return model
+
+
+def build_vision_b(num_classes=3):
+    # models.vision_transformer.VisionTransformer
+    model = models.vit_b_16(
+        weights = models.ViT_B_16_Weights.IMAGENET1K_V1,
+    )
+    fc: nn.Linear = model.heads.head # type: ignore[assignment]
+    model.heads.head = nn.Linear(fc.in_features, num_classes)
+    return model
+
+
+
 def build_model(backbone="resnet18", attn=None, num_classes=3):
 
     if backbone == "resnet18":
         model = build_resnet(attn, num_classes)
     elif backbone == "effnet":
         model = build_efficientnet(attn, num_classes)
+    elif backbone == "swin_t":
+        model = build_swin_t(num_classes)
+    elif backbone == "swin_b":
+        model = build_swin_b(num_classes)
+    elif backbone == "vision":
+        model = build_vision_b(num_classes)
     else:
         raise ValueError(f"Unsupported backbone: {backbone}")
 
@@ -196,10 +237,12 @@ def get_model(backbone="resnet18", attn=None, pretrained_params=None, freeze_bac
     model = build_model(backbone, attn, num_classes)
     
     # pretrained params
-    if pretrained_params is not None: # and backbone in ["resnet18", "effnet"]:
+    if pretrained_params is not None:
         print('loading params:', pretrained_params)
         state_dict = torch.load(pretrained_params, map_location="cpu")
         try:
+            # TODO: load state with minimum number of incompatible layers
+            #       (OR) add exception to attention mechanism models
             model.load_state_dict(state_dict)
         except:
             print(f"ERROR: Incompatible backbone ({backbone}) and params file ({pretrained_params})\n ...exiting")
@@ -211,7 +254,7 @@ def get_model(backbone="resnet18", attn=None, pretrained_params=None, freeze_bac
     # parameters freezing
     if freeze_backbone:
         print('FREEZING: freezing model backbone (non-Linear layers)')
-        model = freeze_non_linear_layers(model)
+        model = freeze_non_final_linear_layer(model)
     
     else:
         print('FREEZING: Unfreezing all layers')
@@ -238,9 +281,10 @@ def get_model(backbone="resnet18", attn=None, pretrained_params=None, freeze_bac
 # region HELPERS
 # ======================================================================================================================
 
+# TODO: remove, deprecated!
 def freeze_non_linear_layers(model):
     """
-    Freeze backbone and leave classifier (linear layers) unfrozen. 
+    Freezes all non linear layers
     """
     for p in model.parameters():
         p.requires_grad = False
@@ -249,6 +293,25 @@ def freeze_non_linear_layers(model):
         if isinstance(m, nn.Linear):
             for p in m.parameters():
                 p.requires_grad = True
+    return model
+
+
+def freeze_non_final_linear_layer(model):
+    """
+    Freeze backbone and leave classifier (final linear layer) unfrozen. 
+    """
+    for p in model.parameters():
+        p.requires_grad = False
+
+    last_linear = None
+    for m in model.modules():
+        if isinstance(m, nn.Linear):
+            last_linear = m
+
+    if last_linear is not None:
+        for p in last_linear.parameters():
+            p.requires_grad = True
+
     return model
 
 def get_parameter_count(model): 
@@ -314,32 +377,33 @@ class MyFocalLossWithLogits(nn.Module):
     
     Implements the equation:
 
-        FL(p_t) = −α_t (1 − pₜ)^γ log(p_t)
+        FL(p_t) = - alpha_t * (1-p_t)^gamma * log(p_t)
     
     Forward: shape of logits and targets is identical. 
     """
-    def __init__(self, gamma: float=5.0, reduction: str="mean"):
+    def __init__(self, gamma: float=2.0):
         super().__init__()
         self.gamma = gamma
-        self.reduction = reduction
     
-    def get_sample_probabilities(self, logits, targets):
+    def get_pt_softmax(self, logits, targets):
         """ Returns the models estimated probability for the correct class """
         probs = F.softmax(logits, dim=1)
         p_t = (probs * targets).mean(dim=1)
         return p_t
     
-    def apply_reduction(self, loss):
-        if self.reduction == "mean":
-            return loss.mean()
-        else:
-            return loss.sum()
+    def get_pt_bce(self, logits, targets):
+        bce_loss = torch.nn.functional.binary_cross_entropy_with_logits(logits, targets, reduction='none')
+        p_t = torch.exp(-bce_loss)
+        F.binary_cross_entropy_with_logits
+        return p_t
     
     def forward(self, logits, targets):
-        p_t = self.get_sample_probabilities(logits, targets)
+        p_t = self.get_pt_bce(logits, targets)
         p_t = torch.clamp(p_t, min=1e-7, max=1.0)  
-        loss = - ((1 - p_t) ** self.gamma) * torch.log(p_t)
-        return self.apply_reduction(loss)
+        # focal_loss = alpha * (1 - pt) ** gamma * bce_loss
+        focal_loss = - (1-p_t)**self.gamma * torch.log(p_t)
+        F.nll_loss
+        return focal_loss.mean()
 
 
 
@@ -351,40 +415,36 @@ class ClassBalancedBCEWithLogitsLoss(nn.Module):
     
     ((1 - beta) / (1 - beta^n_y)) * BCEWithLogitsLoss(logits, targets)
     """
-    def __init__(self, beta: float=0.9999):
+    def __init__(self, beta: float=0.999):
         super().__init__()
         self.beta = beta
 
-
     def get_weights(self, targets):
-        batch_size =      targets.shape[0]
-        no_of_classes =   targets.shape[1]
-        samples_per_cls = targets.sum(dim=0).numpy()
-        
-        beta_per_cls = np.power(self.beta, samples_per_cls)
-        weights = (1.0 - self.beta) / (1.0 - beta_per_cls)
-        weights = weights / np.sum(weights) * no_of_classes # normalize mean to 1
-        weights = torch.tensor(weights).float()
-        
-        weights = weights.unsqueeze(0)
-        weights = weights.repeat(batch_size, 1) * targets
-        weights = weights.sum(1)
+        C = targets.shape[1]
+        samples_per_cls = targets.sum(dim=0)
+
+        beta_per_cls = torch.pow(self.beta, samples_per_cls)
+        denom = 1.0 - beta_per_cls
+        weights = (1.0 - self.beta) / torch.clamp(denom, min=1e-7)
+        weights = weights / torch.sum(weights) * C # normalize mean to 1
+
+        # # class weights to sample weights
+        weights = (weights.unsqueeze(0) * targets).sum(dim=1)
         weights = weights.unsqueeze(1)
-        weights = weights.repeat(1, no_of_classes)
 
         return weights
 
-
     def forward(self, logits, targets):
-        
+        """ 
+        logits:  (N, C)
+        targets: (N, C)
+        """
         weights = self.get_weights(targets)
-        
         cb_loss = F.binary_cross_entropy_with_logits(
             input=logits,
             target=targets.float(),
             weight=weights,
         )
-        
         return cb_loss
 
 
@@ -657,17 +717,8 @@ def main(
 
 
 # ======================================================================================================================
-# region CLI
+# region CLI HELPERS
 # ======================================================================================================================
-
-
-def get_checkpoints(root: Path|str) -> list[str]:
-    root = Path(root)
-    paths = [ str(root / p.relative_to(root)) for p in root.rglob("*.pt") ]
-    paths = [ pth.replace("\\", "/") for pth in paths ]
-    return paths
-
-DEVICE: torch.device
 
 LOSS_FUNCS = {
     "bce":              nn.BCEWithLogitsLoss(),
@@ -682,8 +733,10 @@ ATTENTION_MECHANISMS = {
 }
 
 PRETRAINED_BACKBONES = {
-    'resnet18':     './pretrained_backbone/ckpt_resnet18_ep50.pt',
-    'effnet':       './pretrained_backbone/ckpt_efficientnet_ep50.pt',
+    'resnet18':         './pretrained_backbone/ckpt_resnet18_ep50.pt',
+    'effnet':           './pretrained_backbone/ckpt_efficientnet_ep50.pt',
+    'swin_t':           './pretrained_backbone/ckpt_swin_t.pt',
+    'vision':           './pretrained_backbone/ckpt_visionTransformer.pt',
 }
 
 OPTIMIZERS = {
@@ -692,57 +745,17 @@ OPTIMIZERS = {
     "adamw": (optim.AdamW, {"lr", "weight_decay"}),
 }
 
-if __name__ == "__main__":
 
-    # ARGS
-    # -------------------------------
-    import argparse
-    parser = argparse.ArgumentParser()
+def get_checkpoints(root: Path|str) -> list[str]:
+    root = Path(root)
+    paths = [ str(root / p.relative_to(root)) for p in root.rglob("*.pt") ]
+    paths = [ pth.replace("\\", "/") for pth in paths ]
+    return paths
 
-    # general
-    parser.add_argument("mode", nargs="?", default="train", choices=["train", "test", "predict", "none"])
-    parser.add_argument('--dataset_path', default="./ODIR_dataset", help='Path to dataset root')
-    parser.add_argument('--backbone', '-b', default="resnet18",
-                            help='Which model to use as backbone (else: detects ackbone from --load_checkpoint)')
-    parser.add_argument('--no_pretrained_params', '-npp', action='store_true', 
-                            help="Don't load any params (re-initialize weights, train from scratch)")
-    parser.add_argument('--load_checkpoint', '-ckp',
-                            help="Path to checkpoint to load (relative to `checkpoints/`) (else: load pretrained \
-                                  backbone from `pretrained_backbone/`)")
-    
-    # train args
-    parser.add_argument('--save_name', '-sn', help="Path to save best checkpoint (in checkpoints/)")
-    parser.add_argument('--ft_mode', default="classifier", choices=["classifier", "all"],
-                        help="Fine-tuning mode: which params to unfreeze")
-    parser.add_argument('--loss_fn', default="bce", help="Loss function to use during training")
-    parser.add_argument('--attention_mechanism', '-attn',
-                            help="Attention mechanism to use (use help to list options)")
-    parser.add_argument('--batch_size', type=int, default=32)
-    
-    # hyperparams
-    parser.add_argument('--epochs', type=int, default=20)
-    parser.add_argument('--optimizer', type=str, default="adam")
-    parser.add_argument('--lr', type=float, default=1e-5)
-    parser.add_argument('--weight_decay', type=float, default=0.0)
-    parser.add_argument('--momentum', type=float, default=0.0, help="Only for SGD optimizer")
 
-    # misc
-    parser.add_argument('--predict_csv', help="Path to csv to save output in predict mode")
-    parser.add_argument('--checkpoints_dir', default="checkpoints", 
-                            help="Folder to save and load checkpoints (default `checkpoints/`)")
-    parser.add_argument('--list_checkpoints', '-ls', action="store_true", help="List all detected checkpoints")
-    parser.add_argument('--hyperparams_to_name', '-htn', action='store_true', help="")
-
-    parser.add_argument('--num_classes', type=int, default=3,
-                            help="Number of classes we want to detect (changes shape of classifier). \
-                                  Note: if not 3, pretrained backbone won't load.")
-    
-    args = parser.parse_args()
-    
-    
-    # HANDLE ARGS
-    # -------------------------------
-    
+def handle_args(
+    args: argparse.Namespace,
+):
     # backbone & checkpoint
     checkpoints = get_checkpoints(args.checkpoints_dir)
     if args.list_checkpoints:
@@ -854,10 +867,75 @@ if __name__ == "__main__":
                 ).lower() not in ["y", "yes", "yeahboii"]:
             print(" ..quitting\n")
             sys.exit(0)
+
+    return args, params_file, savename, opt_class, opt_kwargs
+
+
+# ======================================================================================================================
+# region CLI
+# ======================================================================================================================
+
+if __name__ == "__main__":
+
+    # ARGS
+    # ------------------------------------------------------------------------------------------------------------------
+    parser = argparse.ArgumentParser()
+
+    # general
+    parser.add_argument("mode", nargs="?", choices=["train", "test", "predict", "none"], default="none")
+    parser.add_argument('--dataset_path', default="./ODIR_dataset", help='Path to dataset root')
+    parser.add_argument('--backbone', '-b', choices=["resnet18", "effnet", "swin_t", "vision"], default="resnet18",
+                            help='Which model to use as backbone (else: detects ackbone from --load_checkpoint)')
+    parser.add_argument('--no_pretrained_params', '-npp', action='store_true',
+                            help="Don't load any params (re-initialize weights, train from scratch)")
+    parser.add_argument('--load_checkpoint', '-ckp',
+                            help="Path to checkpoint to load (relative to `checkpoints/`) (else: load pretrained \
+                                  backbone from `pretrained_backbone/`)")
+    
+    # train args
+    parser.add_argument('--save_name', '-sn', help="Path to save best checkpoint (in checkpoints/)")
+    parser.add_argument('--ft_mode', choices=["classifier", "all"], default="all",
+                        help="Fine-tuning mode: which params to unfreeze")
+    parser.add_argument('--loss_fn', default="bce", choices=["bce", "focal", "class_balanced"],
+                        help="Loss function to use during training")
+    parser.add_argument('--attention_mechanism', '-attn', choices=["SE", "MHA"], default=None,
+                            help="Attention mechanism to use (use help to list options)")
+    parser.add_argument('--batch_size', type=int, default=32)
+    
+    # hyperparams
+    parser.add_argument('--epochs', type=int, default=20)
+    parser.add_argument('--optimizer', type=str, choices=["sgd", "adam", "adamw"], default="adam")
+    parser.add_argument('--lr', type=float, default=1e-5)
+    parser.add_argument('--weight_decay', type=float, default=0.0)
+    parser.add_argument('--momentum', type=float, default=0.0, help="Only for SGD optimizer")
+
+    # advanced train args
+    parser.add_argument('--lrf', type=float, default=1.0,
+                        help="lr at final epoch (eg. 1e-2)")
+    parser.add_argument('--unfreeze_backbone_after', type=int, default=-1,
+                        help="Epochs after which to unfreeze the backbone")
+    parser.add_argument('--unfreeze_backbone_lr_mult', type=float, default=0.333,
+                        help="Learning rate multiplier after unfreezing backbone")
+
+    # misc
+    parser.add_argument('--predict_csv', help="Path to csv to save output in predict mode")
+    parser.add_argument('--checkpoints_dir', default="checkpoints", 
+                            help="Folder to save and load checkpoints (default `checkpoints/`)")
+    parser.add_argument('--list_checkpoints', '-ls', action="store_true", help="List all detected checkpoints")
+    parser.add_argument('--hyperparams_to_name', '-htn', action='store_true', help="")
+
+    parser.add_argument('--num_classes', type=int, default=3,
+                            help="Number of classes we want to detect (changes shape of classifier). \
+                                  Note: if not 3, pretrained backbone won't load.")
+    
+    args = parser.parse_args()
+    
+    # handle args
+    args, params_file, savename, opt_class, opt_kwargs = handle_args(args)
     
     
     # MAIN
-    # -------------------------------
+    # ------------------------------------------------------------------------------------------------------------------
     
     try:
         main(
@@ -881,4 +959,3 @@ if __name__ == "__main__":
         )
     except KeyboardInterrupt:
         print("\n  ..caught KeyboardInterrupt, stopping\n")
-    

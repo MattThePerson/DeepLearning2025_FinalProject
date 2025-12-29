@@ -4,11 +4,15 @@ __pycache__
 .~lock.*
 
 # custom
-#pretrained_backbone
 checkpoints
 predictions
 runs
 test_results
-.tensorboard
+.tensorboard*
 *_EXAMPLE**
 .trash
+
+pretrained_backbone
+!pretrained_backbone/ckpt_efficientnet_ep50.pt
+!pretrained_backbone/ckpt_resnet18_ep50.pt
+
