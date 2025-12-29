@@ -300,6 +300,7 @@ def hyperparams_to_string(a) -> str:
         optim += f"_dec={a.weight_decay}"
     return f"{s}_{optim}_{a.epochs}ep"
 
+
 # ======================================================================================================================
 # region CUSTOM LOSS
 # ======================================================================================================================
@@ -342,19 +343,49 @@ class MyFocalLossWithLogits(nn.Module):
 
 
 
-class MyClassBalancedLossWithLogits(nn.Module):
+# Modified version of Class Balanced Loss function found here:
+#   https://github.com/vandit15/Class-balanced-loss-pytorch/
+class ClassBalancedBCEWithLogitsLoss(nn.Module):
     """
-    *(Given description) Class-Balanced Loss: Re-weight the BCE loss according to class frequency. This is a common method for handling
-    class imbalance.*
+    Class-Balanced BCE loss using the formula:
     
-    
+    ((1 - beta) / (1 - beta^n_y)) * BCEWithLogitsLoss(logits, targets)
     """
-    def __init__(self, reduction: str="mean"):
+    def __init__(self, beta: float=0.9999):
         super().__init__()
-        self.reduction = reduction
+        self.beta = beta
+
+
+    def get_weights(self, targets):
+        batch_size =      targets.shape[0]
+        no_of_classes =   targets.shape[1]
+        samples_per_cls = targets.sum(dim=0).numpy()
+        
+        beta_per_cls = np.power(self.beta, samples_per_cls)
+        weights = (1.0 - self.beta) / (1.0 - beta_per_cls)
+        weights = weights / np.sum(weights) * no_of_classes # normalize mean to 1
+        weights = torch.tensor(weights).float()
+        
+        weights = weights.unsqueeze(0)
+        weights = weights.repeat(batch_size, 1) * targets
+        weights = weights.sum(1)
+        weights = weights.unsqueeze(1)
+        weights = weights.repeat(1, no_of_classes)
+
+        return weights
+
 
     def forward(self, logits, targets):
-        raise NotImplementedError()
+        
+        weights = self.get_weights(targets)
+        
+        cb_loss = F.binary_cross_entropy_with_logits(
+            input=logits,
+            target=targets.float(),
+            weight=weights,
+        )
+        
+        return cb_loss
 
 
 
@@ -641,7 +672,7 @@ DEVICE: torch.device
 LOSS_FUNCS = {
     "bce":              nn.BCEWithLogitsLoss(),
     "focal":            MyFocalLossWithLogits(),
-    "class_balanced":   MyClassBalancedLossWithLogits(),
+    "class_balanced":   ClassBalancedBCEWithLogitsLoss(),
 }
 
 # TODO: add descriptions
