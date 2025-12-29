@@ -200,7 +200,7 @@ def get_model(backbone="resnet18", attn=None, pretrained_params=None, freeze_bac
         print('loading params:', pretrained_params)
         state_dict = torch.load(pretrained_params, map_location="cpu")
         try:
-            model.load_state_dict(state_dict, strict=False)
+            model.load_state_dict(state_dict)
         except:
             print(f"ERROR: Incompatible backbone ({backbone}) and params file ({pretrained_params})\n ...exiting")
             sys.exit(2)
@@ -295,9 +295,9 @@ def hyperparams_to_string(a) -> str:
         s += f"_attn={a.attention_mechanism}"
     optim = f"optim={a.optimizer}_lr={a.lr}"
     if a.momentum != 0.0:
-        optim += f"_mom={a.momentum:.3f}"
+        optim += f"_mom={a.momentum}"
     if a.weight_decay != 0.0:
-        optim += f"_dec={a.weight_decay:.3f}"
+        optim += f"_dec={a.weight_decay}"
     return f"{s}_{optim}_{a.epochs}ep"
 
 # ======================================================================================================================
@@ -306,8 +306,8 @@ def hyperparams_to_string(a) -> str:
 
 class MyFocalLossWithLogits(nn.Module):
     """
-    *(Description from assignment) Focal Loss: A loss function designed to address class imbalance by downweighting easy examples and focusing
-    training on hard, misclassified ones.*
+    *(Description from assignment) Focal Loss: A loss function designed to address class imbalance by downweighting
+    easy examples and focusing training on hard, misclassified ones.*
     
     My custom implementation of Focal Loss (with logits). Had some help from gpt-5. 
     
@@ -325,7 +325,7 @@ class MyFocalLossWithLogits(nn.Module):
     def get_sample_probabilities(self, logits, targets):
         """ Returns the models estimated probability for the correct class """
         probs = F.softmax(logits, dim=1)
-        p_t = (probs * targets).sum(dim=1)
+        p_t = (probs * targets).mean(dim=1)
         return p_t
     
     def apply_reduction(self, loss):
@@ -525,7 +525,7 @@ def train(
         # display & write
         display_loss(train_loss, prev_train_loss, val_loss, prev_val_loss)
         prev_train_loss, prev_val_loss = train_loss, val_loss
-        write_to_csv(f"{epoch+1},{train_loss:.5f},{val_loss:.5f},{acc:.5f},{precision:.5f},{recall:.5f},{f1:.5f}\n", "a")
+        write_to_csv(f"{epoch+1},{train_loss:.5f},{val_loss:.5f},{acc:.5f},{precision:.5f},{recall:.5f},{f1:.5f}\n","a")
         writer.add_scalar("loss/train", train_loss, epoch+1)
         writer.add_scalar("loss/val", val_loss, epoch+1)
         writer.add_scalar("metrics/acc", acc, epoch+1)
@@ -580,12 +580,6 @@ def main(
                 filter(lambda p: p.requires_grad, model.parameters()),
                 **opt_kwargs,
             )
-            # optimizer = optim.Adam(
-            #     params=filter(lambda p: p.requires_grad, model.parameters()),
-            #     lr=lr,
-            #     weight_decay=1e-5,
-            #     decoupled_weight_decay=False,
-            # )
 
             print(f'Training {backbone} for {epochs} epochs')
             print('loss function:', loss_fn)
@@ -650,7 +644,7 @@ LOSS_FUNCS = {
     "class_balanced":   MyClassBalancedLossWithLogits(),
 }
 
-# TODO: implement
+# TODO: add descriptions
 ATTENTION_MECHANISMS = {
     "SE": "Squeeze-and-Excitation: ...",
     "MHA": "Multi-head Attention: ...",
@@ -682,14 +676,16 @@ if __name__ == "__main__":
     parser.add_argument('--no_pretrained_params', '-npp', action='store_true', 
                             help="Don't load any params (re-initialize weights, train from scratch)")
     parser.add_argument('--load_checkpoint', '-ckp',
-                            help="Path to checkpoint to load (relative to `checkpoints/`) (else: load pretrained backbone from `pretrained_backbone/`)")
+                            help="Path to checkpoint to load (relative to `checkpoints/`) (else: load pretrained \
+                                  backbone from `pretrained_backbone/`)")
     
     # train args
     parser.add_argument('--save_name', '-sn', help="Path to save best checkpoint (in checkpoints/)")
     parser.add_argument('--ft_mode', default="classifier", choices=["classifier", "all"],
                         help="Fine-tuning mode: which params to unfreeze")
     parser.add_argument('--loss_fn', default="bce", help="Loss function to use during training")
-    parser.add_argument('--attention_mechanism', '-attn', help="Attention mechanism to use (use help to list options)")
+    parser.add_argument('--attention_mechanism', '-attn',
+                            help="Attention mechanism to use (use help to list options)")
     parser.add_argument('--batch_size', type=int, default=32)
     
     # hyperparams
@@ -701,12 +697,14 @@ if __name__ == "__main__":
 
     # misc
     parser.add_argument('--predict_csv', help="Path to csv to save output in predict mode")
-    parser.add_argument('--checkpoints_dir', default="checkpoints", help="Folder to save and load checkpoints (default `checkpoints/`)")
+    parser.add_argument('--checkpoints_dir', default="checkpoints", 
+                            help="Folder to save and load checkpoints (default `checkpoints/`)")
     parser.add_argument('--list_checkpoints', '-ls', action="store_true", help="List all detected checkpoints")
     parser.add_argument('--hyperparams_to_name', '-htn', action='store_true', help="")
 
     parser.add_argument('--num_classes', type=int, default=3,
-                            help="Number of classes we want to detect (changes shape of classifier). Note: if not 3, pretrained backbone won't load.")
+                            help="Number of classes we want to detect (changes shape of classifier). \
+                                  Note: if not 3, pretrained backbone won't load.")
     
     args = parser.parse_args()
     
@@ -743,13 +741,20 @@ if __name__ == "__main__":
             sys.exit(2)
         
         params_file = str(filtered_ckpts[0])
-        print('[PARAMS] using  checkpoint:', params_file)
+        print('[PARAMS] using checkpoint:', params_file)
         
         # autodetect backbone
         for bb in PRETRAINED_BACKBONES.keys():
             if bb.lower() in params_file:
-                print(f"Detected backbone from checkpoint filename (overriding --backbone)")
+                print(f"[AUTODETECT] Detected backbone from checkpoint filename (overriding --backbone)")
                 args.backbone = bb
+                break
+
+        # autodetect attention
+        for attn in ATTENTION_MECHANISMS.keys():
+            if f"attn={attn}" in params_file:
+                print(f"[AUTODETECT] Detected attention mechanism from filename: {attn}")
+                args.attention_mechanism = attn
                 break
         
     elif args.no_pretrained_params:
@@ -813,7 +818,8 @@ if __name__ == "__main__":
         savename += ".pt"
     
     if os.path.exists( os.path.join(args.checkpoints_dir, savename) ) and args.mode == "train":
-        if input(f"\033[31mImportant:\033[0m Checkpoint file ('{savename}') already exists. Are you sure you want to replace it?\n ('y' or 'yes') > "
+        if input(f"\033[31mImportant:\033[0m Checkpoint file ('{savename}') already exists. \
+                   Are you sure you want to replace it?\n ('y' or 'yes') > "
                 ).lower() not in ["y", "yes", "yeahboii"]:
             print(" ..quitting\n")
             sys.exit(0)
