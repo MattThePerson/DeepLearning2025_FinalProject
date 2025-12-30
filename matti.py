@@ -277,7 +277,6 @@ def build_vision_b(num_classes=3):
 
 
 def build_model(backbone="resnet18", attn=None, num_classes=3):
-
     if backbone == "resnet18":
         model = build_resnet(attn, num_classes)
     elif backbone == "effnet":
@@ -290,7 +289,6 @@ def build_model(backbone="resnet18", attn=None, num_classes=3):
         model = build_vision_b(num_classes)
     else:
         raise ValueError(f"Unsupported backbone: {backbone}")
-
     return model
 
 
@@ -303,9 +301,10 @@ def get_model(backbone="resnet18", attn=None, pretrained_params=None, freeze_bac
         print('loading params:', pretrained_params)
         state_dict = torch.load(pretrained_params, map_location="cpu")
         try:
-            # TODO: load state with minimum number of incompatible layers
-            #       (OR) add exception to attention mechanism models
-            model.load_state_dict(state_dict)
+            if attn is None:
+                model.load_state_dict(state_dict)
+            else:
+                model.load_state_dict(state_dict, strict=False)
         except:
             print(f"ERROR: Incompatible backbone ({backbone}) and params file ({pretrained_params})\n ...exiting")
             sys.exit(2)
@@ -315,15 +314,14 @@ def get_model(backbone="resnet18", attn=None, pretrained_params=None, freeze_bac
     
     # parameters freezing
     if freeze_backbone:
-        print('FREEZING: freezing model backbone (non-Linear layers)')
+        print('FREEZING: freezing model backbone (classifier unfrozen)')
         model = freeze_non_final_linear_layer(model)
-    
     else:
-        print('FREEZING: Unfreezing all layers')
+        print('FREEZING: unfreezing all layers')
         for p in model.parameters():
             p.requires_grad = True
     
-    # print param amounts
+    # print model info
     all_params, trainable_params = get_parameter_count(model)
     print('=====================')
     print('    LOADED MODEL')
