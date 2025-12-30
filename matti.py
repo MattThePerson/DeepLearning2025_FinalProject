@@ -1,27 +1,30 @@
 """
 Code for training and fine-tuning. By Matt Stirling. 
 """
+from typing import Any
 import argparse
 
 import os
 import sys
+import csv
 from pathlib import Path
 import pandas as pd
-from PIL import Image
 import numpy as np
+from PIL import Image
+from tqdm import tqdm
+
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, cohen_kappa_score
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
+
+import torchvision.ops as ops
 from torchvision import transforms, models
+
 from torch.utils.tensorboard.writer import SummaryWriter
-
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, cohen_kappa_score
-
-from tqdm import tqdm
-import csv
 
 
 DEVICE: torch.device
@@ -107,39 +110,45 @@ def get_dataloaders(dataset_path: str, img_size=256, batch_size=32):
 # region ATTN MODELS
 # ======================================================================================================================
 
-from typing import Any
 from torchvision.models.efficientnet import EfficientNet, _efficientnet_conf
 
 
+# Multihead Attention augmented EfficientNet
+
 class EfficientNet_MHA(EfficientNet):
+    """ 
+    EfficientNet model augmented with a Multihead Attention module from `this paper
+    <https://arxiv.org/abs/1706.03762>`_.  
+    
+    Args:
+        num_heads (int): Number of heads to use in Multihead Attention layer. 
+    """
     def __init__(
             self,
             num_heads: int=8,
             **kwargs: Any,
         ):
             super().__init__(**kwargs)
-            embed_dim = 1280 # NOTE: According to ChatGPT, must verify!
-            self.mha = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads, batch_first=True)
+            fc: nn.Linear = self.classifier[1] # type: ignore[assignment]
+            embed_dim = fc.in_features # same as output channels of self.features
+            self.MHA = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads, batch_first=True)
     
     def attention(self, x: torch.Tensor) -> torch.Tensor:
-        x = x.flatten(2).transpose(1, 2) # (N, H*W, C)
-        x, _ = self.mha(x, x, x)
-        x = torch.mean(x, dim=1) # (N, 1, C)
+        x = x.flatten(2).transpose(1, 2) # (N, W*H, C) get correct shape for MHA
+        x, _ = self.MHA(x, x, x)         # (N, W*H, C)
+        x = torch.mean(x, 1)             # (N, C)
         return x
     
     def _forward_impl(self, x: torch.Tensor) -> torch.Tensor:
+        """ Modified forward. Replaced avgpool and flatten layer with attention block."""
         x = self.features(x)    # (N, C, W, H)
-
-        # x = self.avgpool(x)     # (N, C, 1, 1)
-        x = self.attention(x)
-        x = torch.flatten(x, 1) # (N, C)
-
+        x = self.attention(x)   # (N, C)
         x = self.classifier(x)
         return x
 
 
-# get instance of efficientnet_b0_MHA
 def efficientnet_b0_MHA(
+    num_heads: int=8,
     **kwargs: Any
 ) -> EfficientNet_MHA:
 
@@ -147,10 +156,63 @@ def efficientnet_b0_MHA(
 
     return EfficientNet_MHA(
         inverted_residual_setting=inverted_residual_setting,
-        dropout=0.2,
         last_channel=last_channel,
+        dropout=0.2,
+        num_heads=num_heads,
         **kwargs,
     )
+
+
+# Squeeze-and-Excitation augmented EfficientNet
+
+class EfficientNet_SE(EfficientNet):
+    """ 
+    EfficientNet model augmented with a Squeeze-and-Excitation attention block
+    (from https://arxiv.org/abs/1709.01507). 
+    
+    Args:
+        reduction ratio (int): Determines number of squeeze channels by dividing number of input channels
+    """
+    def __init__(
+            self,
+            reduction_ratio: int = 16,
+            **kwargs: Any,
+        ):
+            super().__init__(**kwargs)
+            fc: nn.Linear = self.classifier[1] # type: ignore[assignment]
+            input_channels = fc.in_features # same as output channels of self.features
+            squeeze_channels = input_channels // reduction_ratio
+            self.SE = ops.SqueezeExcitation(input_channels, squeeze_channels)
+    
+    def attention(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.SE(x)           # (N, C, W, H)
+        return x
+    
+    def _forward_impl(self, x: torch.Tensor) -> torch.Tensor:
+        """ Modified forward by adding attention module before avgpool """
+        x = self.features(x)    # (N, C, W, H)
+        x = self.attention(x)   # (N, C, W, H)
+        x = self.avgpool(x)     # (N, C, 1, 1)
+        x = torch.flatten(x, 1) # (N, C)
+        x = self.classifier(x)
+        return x
+
+
+def efficientnet_b0_SE(
+    reduction_ratio: int=16,
+    **kwargs: Any,
+) -> EfficientNet_SE:
+
+    inverted_residual_setting, last_channel = _efficientnet_conf("efficientnet_b0", width_mult=1.0, depth_mult=1.0)
+
+    return EfficientNet_SE(
+        inverted_residual_setting=inverted_residual_setting,
+        last_channel=last_channel,
+        dropout=0.2,
+        reduction_ratio=reduction_ratio,
+        **kwargs,
+    )
+
 
 
 # ======================================================================================================================
@@ -175,8 +237,8 @@ def build_efficientnet(attn=None, num_classes=3):
         model = models.efficientnet_b0(weights=None)
     elif attn == "MHA":
         model = efficientnet_b0_MHA()
-    # elif attn == "SE":
-    #     ...
+    elif attn == "SE":
+        model = efficientnet_b0_SE()
     else: 
         raise Exception(f"No such attention mechanism for EfficientNet: {attn}")
 
@@ -745,8 +807,9 @@ LOSS_FUNCS = {
 
 # TODO: add descriptions
 ATTENTION_MECHANISMS = {
-    "SE": "Squeeze-and-Excitation: ...",
-    "MHA": "Multi-head Attention: ...",
+    "SE": "Squeeze-and-Excitation: Attention block which adaptively recalibrates channel-wise feature responses by \
+                                   explicitly modelling interdependencies between channels",
+    "MHA": "Multi-head Attention: Attention mechanism described in `Attention is all you need` paper.",
 }
 
 PRETRAINED_BACKBONES = {
