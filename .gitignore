@@ -11,6 +11,7 @@ test_results
 .tensorboard*
 *_EXAMPLE**
 .trash
+final_params
 
 pretrained_backbone
 !pretrained_backbone/ckpt_efficientnet_ep50.pt

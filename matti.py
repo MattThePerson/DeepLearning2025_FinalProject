@@ -361,6 +361,8 @@ def hyperparams_to_string(a) -> str:
         optim += f"_mom={a.momentum}"
     if a.weight_decay != 0.0:
         optim += f"_dec={a.weight_decay}"
+    if a.lr_final != 1.0:
+        optim += f"_lrf={a.lr_final}"
     return f"{s}_{optim}_{a.epochs}ep"
 
 
@@ -551,6 +553,8 @@ def train(
         checkpoints_dir="checkpoints",
         runs_dir="runs",
         save_csv=True,
+        lr0=0.001,
+        lr_final=1.0,
     ) -> str:
 
     writer = SummaryWriter(f".tensorboard/{save_name.replace('.pt', '')}")
@@ -568,9 +572,16 @@ def train(
     ensure_parent_exists(save_name)
     
     # ITERATE
+    lr_delta = (lr0 - lr0 * lr_final) / (epochs-1)
     best_val_loss = float("inf")
     prev_train_loss, prev_val_loss = float("inf"), float("inf")
     for epoch in range(epochs):
+        
+        # determine learning rate
+        lr = lr0 - lr_delta * epoch
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
+        print(f'using lr={lr:.7f}')
         
         # train
         model.train()
@@ -584,7 +595,7 @@ def train(
             optimizer.step()
             train_loss += loss.item() * imgs.size(0)
         train_loss /= len(train_loader.dataset) # type: ignore
-
+        
         # validation
         model.eval()
         val_loss = 0
@@ -647,6 +658,7 @@ def main(
         opt_class = optim.Adam,
         opt_kwargs = {},
         batch_size=32, img_size=256, num_classes=3,
+        lr_final = 1.0, # multiplier for final learning rate target
     ):
     
     global DEVICE
@@ -667,8 +679,11 @@ def main(
     # MODE
     match mode:
         case "train": # - train -------
+            lr0 = opt_kwargs.pop('lr', 0.001)
+            
             optimizer = opt_class(
                 filter(lambda p: p.requires_grad, model.parameters()),
+                lr=lr0,
                 **opt_kwargs,
             )
 
@@ -684,6 +699,8 @@ def main(
                 save_name=save_name,
                 checkpoints_dir=checkpoints_dir,
                 runs_dir=runs_dir,
+                lr0=lr0,
+                lr_final=lr_final,
             )
             print(f"Loading best checkpoint '{best_ckpt}' and testing model")
             model.load_state_dict(torch.load(best_ckpt, map_location="cpu"))
@@ -905,12 +922,12 @@ if __name__ == "__main__":
     # hyperparams
     parser.add_argument('--epochs', type=int, default=20)
     parser.add_argument('--optimizer', type=str, choices=["sgd", "adam", "adamw"], default="adam")
-    parser.add_argument('--lr', type=float, default=1e-5)
+    parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--weight_decay', type=float, default=0.0)
     parser.add_argument('--momentum', type=float, default=0.0, help="Only for SGD optimizer")
 
     # advanced train args
-    parser.add_argument('--lrf', type=float, default=1.0,
+    parser.add_argument('--lr_final', type=float, default=1.0,
                         help="lr at final epoch (eg. 1e-2)")
     parser.add_argument('--unfreeze_backbone_after', type=int, default=-1,
                         help="Epochs after which to unfreeze the backbone")
@@ -956,6 +973,8 @@ if __name__ == "__main__":
             # lr = args.lr,                                       # default: 1e-5
             # batch_size = args.batch_size,                       # default: 32
             num_classes = args.num_classes,
+            lr_final = args.lr_final,
+            # unfreeze_backbone_after = args.unfreeze_backbone_after,
         )
     except KeyboardInterrupt:
         print("\n  ..caught KeyboardInterrupt, stopping\n")
