@@ -1,7 +1,7 @@
 """
 Code for training and fine-tuning. By Matt Stirling. 
 """
-from typing import Any
+from typing import Any, Union
 import argparse
 
 import os
@@ -31,8 +31,97 @@ DEVICE: torch.device
 
 
 # ======================================================================================================================
+# region HELPERS
+# ======================================================================================================================
+
+
+def freeze_non_final_linear_layer(model):
+    """
+    Freeze backbone and leave classifier (final linear layer) unfrozen. 
+    """
+    for p in model.parameters():
+        p.requires_grad = False
+
+    last_linear = None
+    for m in model.modules():
+        if isinstance(m, nn.Linear):
+            last_linear = m
+
+    if last_linear is not None:
+        for p in last_linear.parameters():
+            p.requires_grad = True
+
+    return model
+
+def get_parameter_count(model): 
+    all_params =       sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return all_params, trainable_params
+
+def ensure_parent_exists(file: str):
+    parent = os.path.dirname(file)
+    if parent != '':
+        os.makedirs(parent, exist_ok=True)
+
+def display_loss(train_loss, prev_train_loss, val_loss, prev_val_loss):
+    ANSI_reset = "\033[0m"
+    ANSI_red = "\033[31m"
+    ANSI_green = "\033[32m"
+    train_diff = train_loss - prev_train_loss
+    val_diff = val_loss - prev_val_loss
+    train_diff_col = ANSI_green if (train_diff <= 0) else ANSI_red
+    val_diff_col =   ANSI_green if (val_diff <= 0) else ANSI_red
+    train_msg = f"train loss: {train_loss:.4f} ({train_diff_col}{train_diff:+.4f}{ANSI_reset})"
+    val_msg =     f"val loss: {val_loss:.4f} ({val_diff_col}{val_diff:+.4f}{ANSI_reset})"
+    print(f"  {train_msg:<35}   {val_msg}")
+
+def save_test_results(df: pd.DataFrame, params: str|None, save_dir="test_results"):
+    save_name = f"{save_dir}/test_results.csv"
+    if params is not None:
+        params = params.replace("\\", "/")
+        substr = "checkpoints/"
+        if substr in params:
+            params = params.replace(substr, f"{save_dir}/")
+        else:
+            params = f"{save_dir}/{params}"
+        save_name = params.replace('.pt', '.csv')
+    ensure_parent_exists(save_name)
+    print('saving test results to:', save_name)
+    df.to_csv(save_name)
+
+def hyperparams_to_string(a) -> str:
+    s = ""
+    if a.loss_fn != "bce":
+        s += f"loss={a.loss_fn}"
+    if a.attention_mechanism:
+        s += f"_attn={a.attention_mechanism}"
+    optim = f"optim={a.optimizer}_lr={a.lr:.0e}"
+    if a.momentum != 0.0:
+        optim += f"_mom={a.momentum:.0e}"
+    if a.weight_decay != 0.0:
+        optim += f"_dec={a.weight_decay:.0e}"
+    if a.lr_final != 1.0:
+        optim += f"_lrf={a.lr_final}"
+    return f"{s}_{optim}_{a.epochs}ep"
+
+
+def make_universe_deterministic():
+    import torch
+    import random
+    import numpy as np
+
+    seed = 42
+
+    random.seed(seed); np.random.seed(seed)
+    torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+# ======================================================================================================================
 # region Data Sets/Loaders
 # ======================================================================================================================
+
 class RetinaMultiLabelDataset(Dataset):
     def __init__(self, csv_file, image_dir, transform=None):
         self.data = pd.read_csv(csv_file)
@@ -107,13 +196,86 @@ def get_dataloaders(dataset_path: str, img_size=256, batch_size=32):
 
 
 # ======================================================================================================================
-# region ATTN MODELS
+# region CUSTOM LOSS
+# ======================================================================================================================
+
+class MyFocalLossWithLogits(nn.Module):
+    """
+    *(Description from assignment) Focal Loss: A loss function designed to address class imbalance by downweighting
+    easy examples and focusing training on hard, misclassified ones.*
+    
+    My custom implementation of Focal Loss (with logits). Had some help from gpt-5. 
+    
+    Implements the equation:
+
+        FL(p_t) = - alpha_t * (1-p_t)^gamma * log(p_t)
+    
+    Forward: shape of logits and targets is identical. 
+    """
+    def __init__(self, gamma: float=0.5):
+        super().__init__()
+        self.gamma = gamma
+    
+    def forward(self, logits, targets):
+        targets = targets.float()
+        BCE = F.binary_cross_entropy_with_logits(
+            logits, targets, reduction="none"
+        )
+        probs = torch.sigmoid(logits)
+        p_t = probs * targets + (1 - probs) * (1 - targets)
+        p_t = torch.clamp(p_t, 0, 1.0 - 1e-7)
+        focal_loss = (1 - p_t) ** self.gamma * BCE
+        return focal_loss.mean()
+
+
+# Modified version of Class Balanced Loss function found here:
+#   https://github.com/vandit15/Class-balanced-loss-pytorch/
+class ClassBalancedBCEWithLogitsLoss(nn.Module):
+    """
+    Class-Balanced BCE loss using the formula:
+    
+    ((1 - beta) / (1 - beta^n_y)) * BCEWithLogitsLoss(logits, targets)
+    """
+    def __init__(self, beta: float=0.999):
+        super().__init__()
+        self.beta = beta
+
+    def get_weights(self, targets):
+        C = targets.shape[1]
+        samples_per_cls = targets.sum(dim=0)
+
+        beta_per_cls = torch.pow(self.beta, samples_per_cls)
+        denom = 1.0 - beta_per_cls
+        weights = (1.0 - self.beta) / torch.clamp(denom, min=1e-7)
+        weights = weights / torch.sum(weights) * C # normalize mean to 1
+
+        # # class weights to sample weights
+        weights = (weights.unsqueeze(0) * targets).sum(dim=1)
+        weights = weights.unsqueeze(1)
+
+        return weights
+
+    def forward(self, logits, targets):
+        """ 
+        logits:  (N, C)
+        targets: (N, C)
+        """
+        weights = self.get_weights(targets)
+        cb_loss = F.binary_cross_entropy_with_logits(
+            input=logits,
+            target=targets.float(),
+            weight=weights,
+        )
+        return cb_loss
+
+
+
+# ======================================================================================================================
+# region ATTENTION: effnet
 # ======================================================================================================================
 
 from torchvision.models.efficientnet import EfficientNet, _efficientnet_conf
 
-
-# Multihead Attention augmented EfficientNet
 
 class EfficientNet_MHA(EfficientNet):
     """ 
@@ -163,7 +325,6 @@ def efficientnet_b0_MHA(
     )
 
 
-# Squeeze-and-Excitation augmented EfficientNet
 
 class EfficientNet_SE(EfficientNet):
     """ 
@@ -216,6 +377,73 @@ def efficientnet_b0_SE(
 
 
 # ======================================================================================================================
+# region ATTENTION: resnet
+# ======================================================================================================================
+
+from torchvision.models.resnet import ResNet, Bottleneck, BasicBlock
+
+class ResNet_MHA(ResNet):
+    """ 
+    ResNet18 Augmented with injected Multihead Attention module between layers 3 and 4. 
+    
+    Args:
+        num_heads (int): Number of heads for Multihead Attention module
+    
+    ResNet layer outputs:
+        layer1:   (N, 64,  64, 64)
+        layer2:   (N, 128, 32, 32)
+        layer3:   (N, 256, 16, 16)
+        layer4:   (N, 512, 8,  8)
+    """
+    def __init__(self, block: type[Union[BasicBlock, Bottleneck]], layers: list[int], num_heads: int=8, **kwargs):
+        super().__init__(block, layers, **kwargs)
+
+        self.MHA2 = nn.MultiheadAttention(embed_dim=128, num_heads=num_heads, batch_first=True)
+        self.MHA3 = nn.MultiheadAttention(embed_dim=256, num_heads=num_heads, batch_first=True)
+        self.MHA4 = nn.MultiheadAttention(embed_dim=512, num_heads=num_heads, batch_first=True)
+    
+    def attention(self, x: torch.Tensor, mha: nn.Module) -> torch.Tensor:
+        (N, C, W, H) = x.shape
+        x = torch.flatten(x, 2)           # (N, C, W*H)
+        x = torch.transpose(x, 1, 2)      # flip C and W*H
+        # x = x + self.MHA(x, x, x)[0]      # (N, W*H, C)
+        x = x + mha(x, x, x)[0]
+        # x = F.layer_norm(x, (C, C))
+        x = torch.transpose(x, 1, 2)      # flip C and W*H
+        x = torch.unflatten(x, 2, (W, H)) # (N, C, W, H)
+        return x
+    
+    def _forward_impl(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        # x = self.attention(x, self.MHA2)
+        x = self.layer3(x)
+        x = self.attention(x, self.MHA3)
+        x = self.layer4(x)
+        x = self.attention(x, self.MHA4)
+
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+
+        return x
+
+
+def _resnet_MHA(
+    **kwargs: Any,
+) -> ResNet_MHA:
+
+    model = ResNet_MHA(BasicBlock, [2, 2, 2, 2], **kwargs)
+
+    return model
+
+
+# ======================================================================================================================
 # region BUILD MODEL
 # ======================================================================================================================
 
@@ -224,8 +452,12 @@ def build_resnet(attn=None, num_classes=3):
     # models.resnet.ResNet
     if attn is None:
         model = models.resnet18(weights=None)
+    elif attn == "MHA":
+        model = _resnet_MHA()
+    elif attn == "SE":
+        raise Exception("Squeeze-and-Excitation attention mechanism NOT implemented for Resnet18")
     else:
-        raise Exception("No attention mechanisms implemented for ResNet")
+        raise Exception(f"No such attention mechanism for Resnet18: {attn}")
         
     model.fc = nn.Linear(model.fc.in_features, num_classes)
     return model
@@ -338,180 +570,6 @@ def get_model(backbone="resnet18", attn=None, pretrained_params=None, freeze_bac
 
 
 # ======================================================================================================================
-# region HELPERS
-# ======================================================================================================================
-
-# TODO: remove, deprecated!
-def freeze_non_linear_layers(model):
-    """
-    Freezes all non linear layers
-    """
-    for p in model.parameters():
-        p.requires_grad = False
-    # Unfreeze only Linear layers
-    for m in model.modules():
-        if isinstance(m, nn.Linear):
-            for p in m.parameters():
-                p.requires_grad = True
-    return model
-
-
-def freeze_non_final_linear_layer(model):
-    """
-    Freeze backbone and leave classifier (final linear layer) unfrozen. 
-    """
-    for p in model.parameters():
-        p.requires_grad = False
-
-    last_linear = None
-    for m in model.modules():
-        if isinstance(m, nn.Linear):
-            last_linear = m
-
-    if last_linear is not None:
-        for p in last_linear.parameters():
-            p.requires_grad = True
-
-    return model
-
-def get_parameter_count(model): 
-    all_params =       sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    return all_params, trainable_params
-
-def ensure_parent_exists(file: str):
-    parent = os.path.dirname(file)
-    if parent != '':
-        os.makedirs(parent, exist_ok=True)
-
-def display_loss(train_loss, prev_train_loss, val_loss, prev_val_loss):
-    ANSI_reset = "\033[0m"
-    ANSI_red = "\033[31m"
-    ANSI_green = "\033[32m"
-    train_diff = train_loss - prev_train_loss
-    val_diff = val_loss - prev_val_loss
-    train_diff_col = ANSI_green if (train_diff <= 0) else ANSI_red
-    val_diff_col =   ANSI_green if (val_diff <= 0) else ANSI_red
-    train_msg = f"train loss: {train_loss:.4f} ({train_diff_col}{train_diff:+.4f}{ANSI_reset})"
-    val_msg =     f"val loss: {val_loss:.4f} ({val_diff_col}{val_diff:+.4f}{ANSI_reset})"
-    print(f"  {train_msg:<35}   {val_msg}")
-
-def save_test_results(df: pd.DataFrame, params: str|None, save_dir="test_results"):
-    save_name = f"{save_dir}/test_results.csv"
-    if params is not None:
-        params = params.replace("\\", "/")
-        substr = "checkpoints/"
-        if substr in params:
-            params = params.replace(substr, f"{save_dir}/")
-        else:
-            params = f"{save_dir}/{params}"
-        save_name = params.replace('.pt', '.csv')
-    ensure_parent_exists(save_name)
-    print('saving test results to:', save_name)
-    df.to_csv(save_name)
-
-def hyperparams_to_string(a) -> str:
-    s = ""
-    if a.loss_fn != "bce":
-        s += f"loss={a.loss_fn}"
-    if a.attention_mechanism:
-        s += f"_attn={a.attention_mechanism}"
-    optim = f"optim={a.optimizer}_lr={a.lr}"
-    if a.momentum != 0.0:
-        optim += f"_mom={a.momentum}"
-    if a.weight_decay != 0.0:
-        optim += f"_dec={a.weight_decay}"
-    if a.lr_final != 1.0:
-        optim += f"_lrf={a.lr_final}"
-    return f"{s}_{optim}_{a.epochs}ep"
-
-
-# ======================================================================================================================
-# region CUSTOM LOSS
-# ======================================================================================================================
-
-class MyFocalLossWithLogits(nn.Module):
-    """
-    *(Description from assignment) Focal Loss: A loss function designed to address class imbalance by downweighting
-    easy examples and focusing training on hard, misclassified ones.*
-    
-    My custom implementation of Focal Loss (with logits). Had some help from gpt-5. 
-    
-    Implements the equation:
-
-        FL(p_t) = - alpha_t * (1-p_t)^gamma * log(p_t)
-    
-    Forward: shape of logits and targets is identical. 
-    """
-    def __init__(self, gamma: float=2.0):
-        super().__init__()
-        self.gamma = gamma
-    
-    def get_pt_softmax(self, logits, targets):
-        """ Returns the models estimated probability for the correct class """
-        probs = F.softmax(logits, dim=1)
-        p_t = (probs * targets).mean(dim=1)
-        return p_t
-    
-    def get_pt_bce(self, logits, targets):
-        bce_loss = torch.nn.functional.binary_cross_entropy_with_logits(logits, targets, reduction='none')
-        p_t = torch.exp(-bce_loss)
-        F.binary_cross_entropy_with_logits
-        return p_t
-    
-    def forward(self, logits, targets):
-        p_t = self.get_pt_bce(logits, targets)
-        p_t = torch.clamp(p_t, min=1e-7, max=1.0)  
-        # focal_loss = alpha * (1 - pt) ** gamma * bce_loss
-        focal_loss = - (1-p_t)**self.gamma * torch.log(p_t)
-        F.nll_loss
-        return focal_loss.mean()
-
-
-
-# Modified version of Class Balanced Loss function found here:
-#   https://github.com/vandit15/Class-balanced-loss-pytorch/
-class ClassBalancedBCEWithLogitsLoss(nn.Module):
-    """
-    Class-Balanced BCE loss using the formula:
-    
-    ((1 - beta) / (1 - beta^n_y)) * BCEWithLogitsLoss(logits, targets)
-    """
-    def __init__(self, beta: float=0.999):
-        super().__init__()
-        self.beta = beta
-
-    def get_weights(self, targets):
-        C = targets.shape[1]
-        samples_per_cls = targets.sum(dim=0)
-
-        beta_per_cls = torch.pow(self.beta, samples_per_cls)
-        denom = 1.0 - beta_per_cls
-        weights = (1.0 - self.beta) / torch.clamp(denom, min=1e-7)
-        weights = weights / torch.sum(weights) * C # normalize mean to 1
-
-        # # class weights to sample weights
-        weights = (weights.unsqueeze(0) * targets).sum(dim=1)
-        weights = weights.unsqueeze(1)
-
-        return weights
-
-    def forward(self, logits, targets):
-        """ 
-        logits:  (N, C)
-        targets: (N, C)
-        """
-        weights = self.get_weights(targets)
-        cb_loss = F.binary_cross_entropy_with_logits(
-            input=logits,
-            target=targets.float(),
-            weight=weights,
-        )
-        return cb_loss
-
-
-
-# ======================================================================================================================
 # region predict
 # ======================================================================================================================
 def predict(
@@ -615,8 +673,12 @@ def train(
         save_csv=True,
         lr0=0.001,
         lr_final=1.0,
-    ) -> str:
-
+    ) -> tuple[str, str]:
+    """ 
+    Return:
+        save_name_f1 (str):  best checkpoint (highest val f1-score)
+        save_name_val (str): best checkpoint (lowest val loss)
+    """
     writer = SummaryWriter(f".tensorboard/{save_name.replace('.pt', '')}")
 
     # csv writing
@@ -630,10 +692,13 @@ def train(
     
     save_name = os.path.join( checkpoints_dir, save_name )
     ensure_parent_exists(save_name)
+    save_name_val = save_name
+    save_name_f1 = save_name.replace('.pt', '_(best_f1).pt')
     
     # ITERATE
     lr_delta = (lr0 - lr0 * lr_final) / (epochs-1)
     best_val_loss = float("inf")
+    best_f1 = 0.0
     prev_train_loss, prev_val_loss = float("inf"), float("inf")
     for epoch in range(epochs):
         
@@ -681,8 +746,12 @@ def train(
         # save best
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            print(f"    ..saving best checkpoint to: {save_name}")
-            torch.save(model.state_dict(), save_name)
+            print(f"    ..saving best checkpoint (lowest val loss) to: {save_name_val}")
+            torch.save(model.state_dict(), save_name_val)
+        if f1 > best_f1:
+            best_f1 = f1
+            print(f"    ..saving best checkpoint (highest val f1) to: {save_name_f1}")
+            torch.save(model.state_dict(), save_name_f1)
         
         # display & write
         display_loss(train_loss, prev_train_loss, val_loss, prev_val_loss)
@@ -696,7 +765,7 @@ def train(
         writer.add_scalar("metrics/f1", f1, epoch+1)
 
     writer.close()
-    return save_name
+    return save_name_val, save_name_f1
 
 
 # ======================================================================================================================
@@ -749,7 +818,7 @@ def main(
 
             print(f'Training {backbone} for {epochs} epochs')
             print('loss function:', loss_fn)
-            best_ckpt = train(
+            best_ckpt_val, best_ckpt_f1 = train(
                 model,
                 train_loader,
                 val_loader,
@@ -762,8 +831,8 @@ def main(
                 lr0=lr0,
                 lr_final=lr_final,
             )
-            print(f"Loading best checkpoint '{best_ckpt}' and testing model")
-            model.load_state_dict(torch.load(best_ckpt, map_location="cpu"))
+            print(f"Loading best checkpoint '{best_ckpt_val}' and testing model")
+            model.load_state_dict(torch.load(best_ckpt_val, map_location="cpu"))
             results_df = test(
                 model,
                 test_loader,
@@ -1014,6 +1083,8 @@ if __name__ == "__main__":
     
     # MAIN
     # ------------------------------------------------------------------------------------------------------------------
+    
+    make_universe_deterministic()
     
     try:
         main(
