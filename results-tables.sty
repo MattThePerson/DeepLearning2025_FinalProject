@@ -176,11 +176,13 @@ AMD       0.895000   0.517241  0.681818  0.588235  0.529359
 Average   0.871943   0.853045  0.838863  0.840947  0.654684
 
 
+
     \begin{tabular}{l|l|l|l|l}
         \multicolumn{5}{c}{\textbf{Average metrics}} \\ \hline
-        Mechanism & Accuracy & Precision & Recall & F1-score \\ \hline
-        SE        & 0.856682  &  0.853387  &  0.815166  &  0.833390 \\ \hline
-        MHA       & 0.871943  &  0.853045  &  0.838863  &  0.840947 \\ \hline
+        \textbf{Mechanism}     & Accuracy & Precision & Recall & F1-score \\ \hline
+        \textbf{None (EffNet)} & 0.870237  & 0.865803   &  0.829384  &  0.841722 \\ \hline
+        \textbf{SE (EffNet)}   & 0.856682  &  0.853387  &  0.815166  &  0.833390 \\ \hline
+        \textbf{MHA (ResNet)}  & 0.871943  &  0.853045  &  0.838863  &  0.840947 \\ \hline
     \end{tabular}
 
 
@@ -235,4 +237,17 @@ Average   0.869668   0.857718  0.834123  0.844040  0.667120
         \textbf{task4}   &        & Swin   &  80.4 ± 0.5* &  \textbf{81.85}	  & \textbf{+1.80\%}  & \textbf{True}   \\ \hline
     \end{tabular}
 \end{table}
+
+
+
+
+\textbf{Model}       & Accuracy &    Precision &   Recall &      offsite F1 &  onsite F1 \\ \hline
+\textbf{EffNet}      & 0.870237    & 0.865803   & 0.829384   & 0.841722   & 0.81346 \\ \hline
+\textbf{CB-loss}     & 0.860474    & 0.854187   & 0.810427   & 0.826794   & 0.80164 \\ \hline
+\textbf{SE-EffNet}   & 0.856682    & 0.853387   & 0.815166   & 0.833390   & 0.82027 \\ \hline
+\textbf{MHA-ResNet}  & 0.871943    & 0.853045   & 0.838863   & 0.840947   & 0.79592 \\ \hline
+\textbf{Swin}        & 0.869668    & 0.857718   & 0.834123   & 0.844040   & 0.81850 \\ \hline
+
+
+
 

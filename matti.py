@@ -872,7 +872,6 @@ LOSS_FUNCS = {
     "class_balanced":   ClassBalancedBCEWithLogitsLoss(),
 }
 
-# TODO: add descriptions
 ATTENTION_MECHANISMS = {
     "SE": "Squeeze-and-Excitation: Attention block which adaptively recalibrates channel-wise feature responses by \
                                    explicitly modelling interdependencies between channels",
@@ -1079,7 +1078,6 @@ if __name__ == "__main__":
     
     # handle args
     args, params_file, savename, opt_class, opt_kwargs = handle_args(args)
-    
     
     # MAIN
     # ------------------------------------------------------------------------------------------------------------------
