@@ -943,7 +943,7 @@ def handle_args(
 
         # autodetect attention
         for attn in ATTENTION_MECHANISMS.keys():
-            if f"attn={attn}" in params_file:
+            if f"attn={attn}" in params_file or f"attn_{attn}" in params_file:
                 print(f"[AUTODETECT] Detected attention mechanism from filename: {attn}")
                 args.attention_mechanism = attn
                 break
