@@ -17,3 +17,5 @@ pretrained_backbone
 !pretrained_backbone/ckpt_efficientnet_ep50.pt
 !pretrained_backbone/ckpt_resnet18_ep50.pt
 
+*.zip
+params

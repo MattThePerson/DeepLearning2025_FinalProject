@@ -18,20 +18,20 @@ DR        0.515000   0.717172  0.507143  0.594142  0.033865
 Glaucoma  0.785000   0.575000  0.469388  0.516854  0.380403
 AMD       0.785000   0.301887  0.727273  0.426667  0.321124
 Average   0.605853   0.640856  0.521327  0.558732  0.144292
-% 2.1.1 Efficientnet (fine-tuned classifier)                REDO!!!
+% 2.1.1 Efficientnet (fine-tuned classifier): task1/effnet/class/run1_effnet_classifier_(_optim=adam_lr=1e-04_lrf=0.1_50ep)_(best_f1)
           Accuracy  Precision    Recall  F1-score     Kappa
 Category
-DR        0.780000   0.815789  0.885714  0.849315  0.444444
-Glaucoma  0.800000   0.645161  0.408163  0.500000  0.382811
-AMD       0.930000   0.785714  0.500000  0.611111  0.574727
-Average   0.800284   0.773029  0.734597  0.743358  0.443715
-% 2.1.2 Resnet18 (fine-tuned classifier)                    REDO!!!
+DR        0.780000   0.820000  0.878571  0.848276  0.450000
+Glaucoma  0.790000   0.606061  0.408163  0.487805  0.361993
+AMD       0.930000   0.750000  0.545455  0.631579  0.593968
+Average   0.797962   0.763019  0.734597  0.741971  0.444573
+% 2.1.2 Resnet18 (fine-tuned classifier): task1/resnet/class/run1_resnet18_classifier_(_optim=adam_lr=1e-04_lrf=0.1_50ep)_(best_f1)
           Accuracy  Precision    Recall  F1-score     Kappa
 Category
-DR        0.745000   0.787097  0.871429  0.827119  0.346154
-Glaucoma  0.775000   0.666667  0.163265  0.262295  0.183599
-AMD       0.905000   0.588235  0.454545  0.512821  0.461146
-Average   0.768649   0.738395  0.663507  0.663181  0.320394
+DR        0.735000   0.800000  0.828571  0.814035  0.353659
+Glaucoma  0.790000   0.684211  0.265306  0.382353  0.284376
+AMD       0.900000   0.545455  0.545455  0.545455  0.489275
+Average   0.764976   0.746570  0.668246  0.685783  0.351709
 % 3.1.1 Efficientnet (full): task1/effnet/all/run1_effnet_all_(_optim=adam_lr=1e-03_dec=1e-06_lrf=0.01_150ep)_(best_f1)
           Accuracy  Precision    Recall  F1-score    Kappa
 Category
@@ -53,26 +53,40 @@ Average   0.859313   0.841929  0.819905  0.825802  0.612827
 % ==============================================================================
 
 
-
+% Average Metrics
+\begin{tabular}{l|l|l|l|l}
     \multicolumn{2}{c}{\textbf{Average Metrics}} \\ \hline
     \textbf{Model}       & \textbf{Accuracy} & \textbf{Precision} & \textbf{Recall} & \textbf{F1-score} \\ \hline
-    \textbf{BASE (Eff)}  &  0.65727  &  0.65457  &  0.65402  &  0.63782 \\ \hline
-    \textbf{BASE (Res)}  &  0.60585  &  0.64085  &  0.52132  &  0.55873 \\ \hline
-    \textbf{CLS (Eff)}   &  0.80028  &  0.77302  &  0.73459  &  0.74335 \\ \hline
-    \textbf{CLS (Res)}   &  0.76864  &  0.73839  &  0.66350  &  0.66318 \\ \hline
-    \textbf{FULL (Eff)}  &  0.82860  &  0.82699  &  0.76777  &  0.79506 \\ \hline
-    \textbf{FULL (Res)}  &  0.87687  &  0.88980  &  0.81516  &  0.83460 \\ \hline
-    \end{tabular}
+    \textbf{Eff-Base}    &  0.657275  &  0.654577  &  0.654028  &  0.637823 \\ \hline
+    \textbf{Res-Base}    &  0.605853  &  0.640856  &  0.521327  &  0.558732 \\ \hline
+    \textbf{Eff-ClsFT}   &  0.797962  &  0.763019  &  0.734597  &  0.741971 \\ \hline
+    \textbf{Res-ClsFT}   &  0.764976  &  0.746570  &  0.668246  &  0.685783 \\ \hline
+    \textbf{Eff-FullFT}  &  0.870237  &  0.865803  &  0.829384  &  0.841722 \\ \hline
+    \textbf{Res-FullFT}  &  0.859313  &  0.841929  &  0.819905  &  0.825802 \\ \hline
+\end{tabular}
 
+
+% Disease specific F1-scores
+\begin{tabular}{l|l|l|l|l|l}
     \multicolumn{2}{c}{\textbf{Disease specific F1-scores}} \\ \hline
-    \textbf{Model}  & \textbf{DR} & \textbf{Glaucoma} & \textbf{AMD} \\ \hline
-    \textbf{Eff (base)}  &  0.694656  &  0.594059  &  0.373626  \\ \hline
-    \textbf{Res (base)}  &  0.594142  &  0.516854  &  0.426667  \\ \hline
-    \textbf{Eff (cls)}   &  0.849315  &  0.500000  &  0.611111  \\ \hline
-    \textbf{Res (cls)}   &  0.827119  &  0.262295  &  0.512821  \\ \hline
-    \textbf{Eff (full)}  &  0.849624  &  0.757895  &  0.530612  \\ \hline
-    \textbf{Res (full)}  &  0.899654  &  0.813953  &  0.466667  \\ \hline
-    \end{tabular}
+    \textbf{Model}  & \textbf{DR} & \textbf{Glaucoma} & \textbf{AMD} & \textbf{\textit{Average}} \\ \hline
+    \textbf{Eff-Base}    &  0.694656 & 0.594059 & 0.373626 & \textit{0.637823}  \\ \hline
+    \textbf{Res-Base}    &  0.594142 & 0.516854 & 0.426667 & \textit{0.558732}  \\ \hline
+    \textbf{Eff-ClsFT}   &  0.848276 & 0.487805 & 0.631579 & \textit{0.741971}  \\ \hline
+    \textbf{Res-ClsFT}   &  0.814035 & 0.382353 & 0.545455 & \textit{0.685783}  \\ \hline
+    \textbf{Eff-FullFT}  &  0.892734 & 0.813953 & 0.578947 & \textit{0.841722}  \\ \hline
+    \textbf{Res-FullFT}  &  0.889655 & 0.729412 & 0.634146 & \textit{0.825802}  \\ \hline
+\end{tabular}
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -82,20 +96,63 @@ Average   0.859313   0.841929  0.819905  0.825802  0.612827
 % region TASK 2: results
 % ==============================================================================
 
-% focal: task2/focal/again1_effnet_all_(loss=focal_optim=adam_lr=1e-04_lrf=0.05_50ep)_(best_f1)
+% FOCAL LOSS
+%   task2/focal/again1_effnet_all_(loss=focal_optim=adam_lr=1e-04_lrf=0.05_50ep)_(best_f1)
           Accuracy  Precision    Recall  F1-score     Kappa
 Category
 DR        0.785000   0.859259  0.828571  0.843636  0.500000
 Glaucoma  0.845000   0.704545  0.632653  0.666667  0.566069
 AMD       0.895000   0.520000  0.590909  0.553191  0.493976
 Average   0.810403   0.787957  0.758294  0.772256  0.514715
-% class_balanced: task2/class_balanced/again1_effnet_all_(loss=class_balanced_optim=adam_lr=1e-03_dec=1e-07_lrf=0.005_80ep)_(best_f1)
+% CLASS BALANCED LOSS
+%   task2/class_balanced/again1_effnet_all_(loss=class_balanced_optim=adam_lr=1e-03_dec=1e-07_lrf=0.005_80ep)_(best_f1)
           Accuracy  Precision    Recall  F1-score     Kappa
 Category
 DR        0.840000   0.869863  0.907143  0.888112  0.607843
 Glaucoma  0.890000   0.885714  0.632653  0.738095  0.670905
 AMD       0.925000   0.684211  0.590909  0.634146  0.592613
 Average   0.860474   0.854187  0.810427  0.826794  0.620900
+
+
+% ==============================================================================
+% Formatting
+
+
+% Disease specific F1-scores
+\begin{tabular}{l|l|l|l|l}
+    \multicolumn{5}{c}{\textbf{F1-score}} \\ \hline
+    \textbf{Loss}  & \textbf{DR} & \textbf{Glaucoma} & \textbf{AMD} & \textbf{\textit{Average}} \\ \hline
+    \textbf{BCE} & 0.892734 & 0.813953 & 0.578947 & 0.841722   \\ \hline
+    \textbf{FL}  & 0.843636 & 0.666667 & 0.553191 & 0.772256   \\ \hline
+    \textbf{CB}  & 0.888112 & 0.738095 & 0.634146 & 0.826794   \\ \hline
+\end{tabular}
+
+
+% Disease specific accuracies
+\begin{tabular}{l|l|l|l|l}
+    \multicolumn{5}{c}{\textbf{Accuracy}} \\ \hline
+    \textbf{Loss}  & \textbf{DR} & \textbf{Glaucoma} & \textbf{AMD} & \textbf{\textit{Average}} \\ \hline
+    \textbf{BCE} & 0.845000 & 0.920000 & 0.920000 & 0.870237  \\ \hline
+    \textbf{FL}  & 0.785000 & 0.845000 & 0.895000 & 0.810403  \\ \hline
+    \textbf{CB}  & 0.840000 & 0.890000 & 0.925000 & 0.860474  \\ \hline
+\end{tabular}
+
+
+
+% precision
+\begin{tabular}{l|l|l|l|l}
+    \multicolumn{5}{c}{\textbf{Precision}} \\ \hline
+    \textbf{Loss}  & \textbf{DR} & \textbf{Glaucoma} & \textbf{AMD} & \textbf{\textit{Average}} \\ \hline
+    \textbf{BCE} & 0.865772 & 0.945946 & 0.687500 & 0.865803  \\ \hline 
+    \textbf{FL}  & 0.859259 & 0.704545 & 0.520000 & 0.787957  \\ \hline 
+    \textbf{CB}  & 0.869863 & 0.885714 & 0.684211 & 0.854187  \\ \hline 
+\end{tabular}
+
+% recall
+\textbf{BCE} & 0.921429 & 0.714286 & 0.500000 & 0.829384  \\ \hline
+\textbf{FL}  & 0.828571 & 0.632653 & 0.590909 & 0.758294  \\ \hline
+\textbf{CB}  & 0.907143 & 0.632653 & 0.590909 & 0.810427  \\ \hline
+
 
 
 
@@ -119,9 +176,19 @@ AMD       0.895000   0.517241  0.681818  0.588235  0.529359
 Average   0.871943   0.853045  0.838863  0.840947  0.654684
 
 
+    \begin{tabular}{l|l|l|l|l}
+        \multicolumn{5}{c}{\textbf{Average metrics}} \\ \hline
+        Mechanism & Accuracy & Precision & Recall & F1-score \\ \hline
+        SE        & 0.856682  &  0.853387  &  0.815166  &  0.833390 \\ \hline
+        MHA       & 0.871943  &  0.853045  &  0.838863  &  0.840947 \\ \hline
+    \end{tabular}
+
+
+
+
 
 % ==============================================================================
-% region TASK 2: results
+% region TASK 4: results
 % ==============================================================================
 
 % swin_transformer: task4/swin/again1_swin_t_all_(_optim=adam_lr=5e-05_dec=1e-07_lrf=0.05_50ep)_(best_f1)
@@ -131,3 +198,41 @@ DR        0.850000   0.910448  0.871429  0.890511  0.652778
 Glaucoma  0.910000   0.844444  0.775510  0.808511  0.749826
 AMD       0.905000   0.551724  0.727273  0.627451  0.574182
 Average   0.869668   0.857718  0.834123  0.844040  0.667120
+
+
+
+\begin{table}[h]
+    \begin{tabular}{l|l|l|l|l}
+        \multicolumn{5}{c}{\textbf{Precision}} \\ \hline
+        \textbf{Backbone} & Accuracy  &  Precision  &    Recall  &  F1-score  \\ \hline
+        \textbf{EffNet}   & 0.870237  &   0.865803  &  0.829384  &  0.841722  \\ \hline
+        \textbf{ResNet}   & 0.859313  &   0.841929  &  0.819905  &  0.825802  \\ \hline
+        \textbf{Swin}     & 0.869668  &   0.857718  &  0.834123  &  0.844040  \\ \hline
+    \end{tabular}
+\end{table}
+
+        \textbf{EffNet} & 0.892734 & 0.813953 & 0.578947  \\ \hline
+        \textbf{ResNet} & 0.889655 & 0.729412 & 0.634146  \\ \hline
+        \textbf{Swin}   & 0.890511 & 0.808511 & 0.627451  \\ \hline
+
+
+% ==============================================================================
+% region Onsite Test Comparison
+% ==============================================================================
+
+\begin{table}[h]
+    \begin{tabular}{l|l|l|l|l|l}
+        \multicolumn{6}{c}{\textbf{Precision}} \\ \hline
+        \textbf{Task} & \textbf{Desc} & \textbf{BCK} & \textbf{Reference} & \textbf{F1-score} & \textbf{Diff \%} & \textbf{CMP} \\ \hline
+        \textbf{task1-2} & Par.   & Eff    &  73.5 ± 0.6  &  69.52	  & -5.41\%  & False  \\ \hline
+        \textbf{task1-2} & Par.   & Res    &  61.4 ± 0.3  &  57.86	  & -5.77\%  & False  \\ \hline
+        \textbf{task1-3} & Full   & Eff    &  80.4 ± 0.5  &  81.35	  & +1.18\%  & \textbf{True}   \\ \hline
+        \textbf{task1-3} & Full   & Res    &  78.8 ± 0.8  &  78.20	  & -0.76\%  & \textbf{True}   \\ \hline
+        \textbf{task2-1} & FL     & Eff    &  80.4 ± 0.5  &  77.73	  & -3.33\%  & False  \\ \hline
+        \textbf{task2-2} & CB     & Eff    &  80.4 ± 0.5  &  80.16	  & -0.29\%  & \textbf{True}   \\ \hline
+        \textbf{task3-1} & SE     & Eff    &  80.4 ± 0.5  &  \textbf{82.03}	  & \textbf{+2.02\%}  & \textbf{True}   \\ \hline
+        \textbf{task3-2} & MHA    & Res    &  78.8 ± 0.8  &  79.59	  & +1.01\%  & \textbf{True}   \\ \hline
+        \textbf{task4}   &        & Swin   &  80.4 ± 0.5* &  \textbf{81.85}	  & \textbf{+1.80\%}  & \textbf{True}   \\ \hline
+    \end{tabular}
+\end{table}
+
